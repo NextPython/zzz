@@ -1,12 +1,12 @@
 --=====================================================================
---  MATCHA EXTERNAL · HVH FRAMEWORK  v1.1  (build corregido)
---  Target: Matcha LuaVM  ·  doc.wabisabi.mom/matcha
---  API real: WorldToScreen global, mouse1press, mousemoverel,
---            ismouse1pressed, iskeypressed(VK), Drawing.Fonts.*
+--  MATCHA EXTERNAL · HVH FRAMEWORK  v1.2
+--  Target: Matcha LuaVM · doc.wabisabi.mom/matcha
+--  Text usa: Text, Size, Color, Center, Font, Outline  (NO FontSize/OutlineColor)
+--  Todas las props se asignan con pcall individual -> inmune a diferencias
 --=====================================================================
 
 if _G.MHVH and _G.MHVH.unload then pcall(_G.MHVH.unload) end
-_G.MHVH = { conns = {}, objs = {}, timers = {}, running = true, mouseDown = false }
+_G.MHVH = { conns = {}, objs = {}, timers = {}, running = true }
 
 --=====================================================================
 -- [0] SERVICIOS
@@ -20,7 +20,6 @@ local Players    = svc("Players")
 local RunService = svc("RunService")
 local UIS        = svc("UserInputService")
 local Workspace  = svc("Workspace")
-local HttpService= svc("HttpService")
 
 local Camera = Workspace and Workspace.CurrentCamera
 local LP     = Players and Players.LocalPlayer
@@ -31,13 +30,11 @@ local function mk(class)
     if ok and o then table.insert(_G.MHVH.objs, o) return o end
 end
 local function kill(o) if o then pcall(function() o:Remove() end) end end
-local function sp(o, k, v) pcall(function() o[k] = v end) end
+local function sp(o, k, v) if o then pcall(function() o[k] = v end) end end
 
-local function lerp(a, b, t) return a + (b - a) * t end
 local function clamp(v, a, b) return v < a and a or (v > b and b or v) end
 local function now() return tick() end
 
--- timers (task.delay es no-op en este build)
 local function after(sec, fn)
     table.insert(_G.MHVH.timers, { t = now() + sec, fn = fn })
 end
@@ -56,7 +53,6 @@ end
 -- [1] CURSOR
 --=====================================================================
 local Mouse = { X = 0, Y = 0 }
-local mouseValid = false
 
 local function getMouse()
     if LP then
@@ -65,8 +61,6 @@ local function getMouse()
             local ok2, x = pcall(function() return m.X end)
             if ok2 and type(x) == "number" then
                 Mouse.X, Mouse.Y = m.X, m.Y
-                mouseValid = true
-                return Mouse
             end
         end
     end
@@ -120,7 +114,7 @@ local function ensureDir()
 end
 local function serialize()
     local out = { "-- matcha_hvh" }
-    for k, d in pairs(Defaults) do
+    for k in pairs(Defaults) do
         local v, tv = Cfg[k], type(Cfg[k])
         if tv == "boolean" or tv == "number" or tv == "string" then
             table.insert(out, k .. "=" .. tostring(v))
@@ -150,8 +144,7 @@ local function deserialize(txt)
 end
 local function saveConfig(n)
     ensureDir()
-    local ok = pcall(writefile, DIR .. "/" .. n .. ".cfg", serialize())
-    return ok
+    return pcall(writefile, DIR .. "/" .. n .. ".cfg", serialize())
 end
 local function loadConfig(n)
     local ok, txt = pcall(readfile, DIR .. "/" .. n .. ".cfg")
@@ -160,24 +153,32 @@ local function loadConfig(n)
 end
 
 --=====================================================================
--- [4] TEMA + HELPERS DE DIBUJO
+-- [4] TEMA + DIBUJO (creación 100% con pcall)
 --=====================================================================
 local T = {
-    bg      = Color3.fromRGB(13, 13, 16),
-    panel   = Color3.fromRGB(19, 19, 23),
-    panel2  = Color3.fromRGB(26, 26, 32),
-    stroke  = Color3.fromRGB(38, 38, 47),
-    text    = Color3.fromRGB(234, 234, 240),
-    sub     = Color3.fromRGB(124, 124, 140),
-    ok      = Color3.fromRGB(92, 219, 143),
-    bad     = Color3.fromRGB(240, 92, 92),
+    bg     = Color3.fromRGB(13, 13, 16),
+    panel  = Color3.fromRGB(19, 19, 23),
+    panel2 = Color3.fromRGB(26, 26, 32),
+    stroke = Color3.fromRGB(38, 38, 47),
+    text   = Color3.fromRGB(234, 234, 240),
+    sub    = Color3.fromRGB(124, 124, 140),
+    ok     = Color3.fromRGB(92, 219, 143),
+    bad    = Color3.fromRGB(240, 92, 92),
 }
+
+-- Fuente: intenta el enum de Drawing.Fonts, cae a índice numérico
+local function fnt(name, fallback)
+    local ok, v = pcall(function() return Drawing.Fonts[name] end)
+    if ok and v ~= nil then return v end
+    return fallback
+end
 local FONT = {
-    UI       = Drawing.Fonts.UI,
-    Bold     = Drawing.Fonts.SystemBold,
-    System   = Drawing.Fonts.System,
-    Mono     = Drawing.Fonts.Monospace,
+    UI   = fnt("UI", 2),
+    Bold = fnt("SystemBold", 2),
+    Sys  = fnt("System", 1),
+    Mono = fnt("Monospace", 3),
 }
+
 local ACCENT = { 126, 92, 255 }
 local function accent(a)
     local c = Color3.fromRGB(ACCENT[1], ACCENT[2], ACCENT[3])
@@ -188,12 +189,13 @@ end
 local function rect(parent, color, filled, trans, thick)
     local o = mk("Square")
     if not o then return nil end
-    o.Color = color
-    o.Filled = filled and true or false
-    o.Transparency = trans or 0
-    o.Visible = false
-    o.ZIndex = parent and parent.z or 2
+    sp(o, "Color", color)
+    sp(o, "Filled", filled and true or false)
+    sp(o, "Transparency", trans or 0)
+    sp(o, "Thickness", thick or 1)
     sp(o, "Corner", 0)
+    sp(o, "Visible", false)
+    sp(o, "ZIndex", parent and parent.z or 2)
     if parent and parent.objects then table.insert(parent.objects, o) end
     return o
 end
@@ -201,14 +203,14 @@ end
 local function label(parent, size, color, str, center, font)
     local o = mk("Text")
     if not o then return nil end
-    o.Text = str or ""
-    o.FontSize = size or 12
-    o.Color = color or T.text
-    o.Center = center and true or false
-    o.Font = font or FONT.UI
-    o.Outline = true
-    o.Visible = false
-    o.ZIndex = parent and parent.z or 3
+    sp(o, "Text", str or "")
+    sp(o, "Size", size or 12)
+    sp(o, "Color", color or T.text)
+    sp(o, "Center", center and true or false)
+    sp(o, "Font", font or FONT.UI)
+    sp(o, "Outline", true)
+    sp(o, "Visible", false)
+    sp(o, "ZIndex", parent and parent.z or 3)
     if parent and parent.objects then table.insert(parent.objects, o) end
     return o
 end
@@ -216,10 +218,10 @@ end
 local function line(parent, color, thick)
     local o = mk("Line")
     if not o then return nil end
-    o.Color = color or T.text
-    o.Thickness = thick or 1
-    o.Visible = false
-    o.ZIndex = parent and parent.z or 3
+    sp(o, "Color", color or T.text)
+    sp(o, "Thickness", thick or 1)
+    sp(o, "Visible", false)
+    sp(o, "ZIndex", parent and parent.z or 3)
     if parent and parent.objects then table.insert(parent.objects, o) end
     return o
 end
@@ -227,12 +229,12 @@ end
 local function circle(parent, color, thick, filled)
     local o = mk("Circle")
     if not o then return nil end
-    o.Color = color or T.text
-    o.Thickness = thick or 1
-    o.Filled = filled and true or false
-    o.NumSides = 64
-    o.Visible = false
-    o.ZIndex = parent and parent.z or 3
+    sp(o, "Color", color or T.text)
+    sp(o, "Thickness", thick or 1)
+    sp(o, "NumSides", 64)
+    sp(o, "Filled", filled and true or false)
+    sp(o, "Visible", false)
+    sp(o, "ZIndex", parent and parent.z or 3)
     if parent and parent.objects then table.insert(parent.objects, o) end
     return o
 end
@@ -264,7 +266,7 @@ function UI.new(title, sub)
     self.sBox    = rect(self, T.panel2, true, 0)
     self.sTxt    = label(self, 12, T.sub, "buscar...", false, FONT.UI)
     self.content = rect(self, T.bg, true, 0)
-    self.scroll  = rect(self, T.stroke, true, 0)
+    self.track   = rect(self, T.stroke, true, 0)
     self.knob    = rect(self, accent(0.2), true, 0)
 
     sp(self.frame, "Corner", 6)
@@ -279,20 +281,18 @@ end
 function UI:apply()
     local w, h = self.w, (self.min and 44 or self.h)
     local x, y = self.x, self.y
-    self.frame.Position  = Vector2.new(x, y); self.frame.Size = Vector2.new(w, h)
-    self.outline.Position= Vector2.new(x, y); self.outline.Size = Vector2.new(w, h)
-    self.bar.Position    = Vector2.new(x, y); self.bar.Size = Vector2.new(w, 44)
-    self.accent.Position = Vector2.new(x, y); self.accent.Size = Vector2.new(w, 2)
-    self.side.Position   = Vector2.new(x, y + 44); self.side.Size = Vector2.new(150, h - 44)
-    self.logo.Position   = Vector2.new(x + 14, y + 9)
-    self.logo2.Position  = Vector2.new(x + 14, y + 27)
-    self.close.Position  = Vector2.new(x + w - 18, y + 12)
-    self.mini.Position   = Vector2.new(x + w - 42, y + 12)
-    self.sBox.Position   = Vector2.new(x + 160, y + 9)
-    self.sBox.Size       = Vector2.new(w - 216, 26)
-    self.sTxt.Position   = Vector2.new(x + 168, y + 14)
-    self.content.Position= Vector2.new(x + 150, y + 44)
-    self.content.Size    = Vector2.new(w - 150, h - 44)
+    sp(self.frame, "Position", Vector2.new(x, y));    sp(self.frame, "Size", Vector2.new(w, h))
+    sp(self.outline, "Position", Vector2.new(x, y));  sp(self.outline, "Size", Vector2.new(w, h))
+    sp(self.bar, "Position", Vector2.new(x, y));      sp(self.bar, "Size", Vector2.new(w, 44))
+    sp(self.accent, "Position", Vector2.new(x, y));   sp(self.accent, "Size", Vector2.new(w, 2))
+    sp(self.side, "Position", Vector2.new(x, y + 44));sp(self.side, "Size", Vector2.new(150, h - 44))
+    sp(self.logo, "Position", Vector2.new(x + 14, y + 9))
+    sp(self.logo2, "Position", Vector2.new(x + 14, y + 27))
+    sp(self.close, "Position", Vector2.new(x + w - 18, y + 12))
+    sp(self.mini, "Position", Vector2.new(x + w - 42, y + 12))
+    sp(self.sBox, "Position", Vector2.new(x + 160, y + 9));  sp(self.sBox, "Size", Vector2.new(w - 216, 26))
+    sp(self.sTxt, "Position", Vector2.new(x + 168, y + 14))
+    sp(self.content, "Position", Vector2.new(x + 150, y + 44)); sp(self.content, "Size", Vector2.new(w - 150, h - 44))
     for _, t in ipairs(self.tabs) do
         t.contentY = y + 52
         t:layout()
@@ -302,30 +302,27 @@ end
 
 function UI:scrollbar()
     if not self.tab then return end
-    local visible = (self.tab.total or 0) > (self.h - 60)
-    self.scroll.Visible = visible and not self.min
-    self.knob.Visible = visible and not self.min
+    local visible = (self.tab.total or 0) > (self.h - 60) and not self.min
+    sp(self.track, "Visible", visible)
+    sp(self.knob, "Visible", visible)
     if not visible then return end
     local trackH = self.h - 70
-    local ratio = (self.h - 60) / math.max(self.tab.total, 1)
-    local kh = math.max(24, trackH * ratio)
-    local maxScroll = math.max(1, self.tab.total - (self.h - 60))
-    local p = clamp(self.tab.scroll / maxScroll, 0, 1)
-    self.scroll.Position = Vector2.new(self.x + self.w - 7, self.y + 50)
-    self.scroll.Size = Vector2.new(3, trackH)
-    self.knob.Position = Vector2.new(self.x + self.w - 7, self.y + 50 + (trackH - kh) * p)
-    self.knob.Size = Vector2.new(3, kh)
+    local kh = math.max(24, trackH * ((self.h - 60) / math.max(self.tab.total, 1)))
+    local maxS = math.max(1, self.tab.total - (self.h - 60))
+    local p = clamp(self.tab.scroll / maxS, 0, 1)
+    sp(self.track, "Position", Vector2.new(self.x + self.w - 7, self.y + 50))
+    sp(self.track, "Size", Vector2.new(3, trackH))
+    sp(self.knob, "Position", Vector2.new(self.x + self.w - 7, self.y + 50 + (trackH - kh) * p))
+    sp(self.knob, "Size", Vector2.new(3, kh))
 end
 
 function UI:show(v)
-    for _, o in ipairs(self.objects) do if o then sp(o, "Visible", v) end end
+    for _, o in ipairs(self.objects) do sp(o, "Visible", v) end
     for _, t in ipairs(self.tabs) do t:show(v and t == self.tab) end
     if v then self:scrollbar() end
 end
 
-function UI:setInput(b)
-    pcall(setrobloxinput, b)
-end
+function UI:setInput(b) pcall(setrobloxinput, b) end
 
 -- ---- Tab ----
 local Tab = {}
@@ -334,9 +331,9 @@ function Tab.new(win, name)
     local t = setmetatable({}, Tab)
     t.win, t.name, t.sections, t.objects = win, name, {}, {}
     t.z, t.scroll, t.contentY, t.total = 11, 0, win.y + 52, 0
-    t.btn    = rect(t, T.panel, true, 0)
-    t.txt    = label(t, 12, T.sub, name, false, FONT.UI)
-    t.pill   = rect(t, accent(), true, 0)
+    t.btn  = rect(t, T.panel, true, 0)
+    t.txt  = label(t, 12, T.sub, name, false, FONT.UI)
+    t.pill = rect(t, accent(), true, 0)
     sp(t.btn, "Corner", 4)
     table.insert(win.tabs, t)
     if not win.tab then win.tab = t end
@@ -345,7 +342,7 @@ function Tab.new(win, name)
     return t
 end
 function Tab:show(v)
-    for _, o in ipairs(self.objects) do if o then sp(o, "Visible", v) end end
+    for _, o in ipairs(self.objects) do sp(o, "Visible", v) end
     for _, s in ipairs(self.sections) do s:show(v) end
     self.on = v
 end
@@ -360,15 +357,15 @@ function Tab:layout()
     local win = self.win
     for i, t in ipairs(win.tabs) do
         local by = win.y + 54 + (i - 1) * 30
-        t.btn.Position = Vector2.new(win.x + 8, by)
-        t.btn.Size = Vector2.new(134, 26)
-        t.txt.Position = Vector2.new(win.x + 18, by + 6)
-        t.pill.Position = Vector2.new(win.x + 2, by + 5)
-        t.pill.Size = Vector2.new(3, 16)
+        sp(t.btn, "Position", Vector2.new(win.x + 8, by))
+        sp(t.btn, "Size", Vector2.new(134, 26))
+        sp(t.txt, "Position", Vector2.new(win.x + 18, by + 6))
+        sp(t.pill, "Position", Vector2.new(win.x + 2, by + 5))
+        sp(t.pill, "Size", Vector2.new(3, 16))
         local on = (t == win.tab)
-        t.pill.Visible = on
-        t.btn.Color = on and T.panel2 or T.panel
-        t.txt.Color = on and T.text or T.sub
+        sp(t.pill, "Visible", on)
+        sp(t.btn, "Color", on and T.panel2 or T.panel)
+        sp(t.txt, "Color", on and T.text or T.sub)
     end
 end
 function Tab:search(q)
@@ -396,7 +393,7 @@ function Section.new(tab, name, desc)
     return s
 end
 function Section:show(v)
-    for _, o in ipairs(self.objects) do if o then sp(o, "Visible", v) end end
+    for _, o in ipairs(self.objects) do sp(o, "Visible", v) end
     for _, e in ipairs(self.items) do e:show(v and e.match) end
     self.on = v
 end
@@ -411,12 +408,12 @@ function Section:layout()
         end
     end
     self.h = y + self.pad
-    self.bg.Position     = Vector2.new(self.x, self.baseY)
-    self.bg.Size         = Vector2.new(w + 24, self.h)
-    self.stroke.Position = Vector2.new(self.x, self.baseY)
-    self.stroke.Size     = Vector2.new(w + 24, self.h)
-    self.title.Position  = Vector2.new(self.x + self.pad, self.baseY + 10)
-    if self.desc then self.desc.Position = Vector2.new(self.x + self.pad, self.baseY + 25) end
+    sp(self.bg, "Position", Vector2.new(self.x, self.baseY))
+    sp(self.bg, "Size", Vector2.new(w + 24, self.h))
+    sp(self.stroke, "Position", Vector2.new(self.x, self.baseY))
+    sp(self.stroke, "Size", Vector2.new(w + 24, self.h))
+    sp(self.title, "Position", Vector2.new(self.x + self.pad, self.baseY + 10))
+    if self.desc then sp(self.desc, "Position", Vector2.new(self.x + self.pad, self.baseY + 25)) end
 end
 function Section:search(q)
     for _, e in ipairs(self.items) do
@@ -428,7 +425,7 @@ end
 local El = {}
 El.__index = El
 function El:show(v)
-    for _, o in ipairs(self.objects) do if o then sp(o, "Visible", v) end end
+    for _, o in ipairs(self.objects) do sp(o, "Visible", v) end
 end
 
 local function base(section, h, textStr)
@@ -444,20 +441,18 @@ function Section:Toggle(name, key, def, cb)
     e.box    = rect(e, T.panel2, true, 0)
     e.stroke = rect(e, T.stroke, false, 0, 1)
     e.dot    = rect(e, T.sub, true, 0)
-    sp(e.box, "Corner", 8)
-    sp(e.stroke, "Corner", 8)
-    sp(e.dot, "Corner", 6)
+    sp(e.box, "Corner", 8); sp(e.stroke, "Corner", 8); sp(e.dot, "Corner", 6)
     function e:place(x, y)
-        self.txtLabel.Position = Vector2.new(x, y + 5)
-        self.box.Position      = Vector2.new(x + self.win_w - 40, y + 4)
-        self.box.Size          = Vector2.new(34, 16)
-        self.stroke.Position   = Vector2.new(x + self.win_w - 40, y + 4)
-        self.stroke.Size       = Vector2.new(34, 16)
+        sp(self.txtLabel, "Position", Vector2.new(x, y + 5))
+        sp(self.box, "Position", Vector2.new(x + self.win_w - 40, y + 4))
+        sp(self.box, "Size", Vector2.new(34, 16))
+        sp(self.stroke, "Position", Vector2.new(x + self.win_w - 40, y + 4))
+        sp(self.stroke, "Size", Vector2.new(34, 16))
         local on = get(key)
-        self.dot.Position = Vector2.new(on and (x + self.win_w - 24) or (x + self.win_w - 38), y + 6)
-        self.dot.Size     = Vector2.new(12, 12)
-        self.dot.Color    = on and accent() or T.sub
-        self.txtLabel.Color = on and T.text or T.sub
+        sp(self.dot, "Position", Vector2.new(on and (x + self.win_w - 24) or (x + self.win_w - 38), y + 6))
+        sp(self.dot, "Size", Vector2.new(12, 12))
+        sp(self.dot, "Color", on and accent() or T.sub)
+        sp(self.txtLabel, "Color", on and T.text or T.sub)
     end
     e.hit = function(mx, my)
         if not e.match then return false end
@@ -479,34 +474,32 @@ function Section:Slider(name, key, min, max, def, dec, suffix, cb)
     reg(key, def)
     local e = base(self, 38, name)
     e.val   = label(e, 12, accent(), tostring(def), false, FONT.UI)
-    e.track = rect(e, T.panel2, true, 0)
+    e.tr    = rect(e, T.panel2, true, 0)
     e.fill  = rect(e, accent(), true, 0)
     e.knob  = rect(e, T.text, true, 0)
-    sp(e.track, "Corner", 2)
-    sp(e.fill, "Corner", 2)
-    sp(e.knob, "Corner", 3)
+    sp(e.tr, "Corner", 2); sp(e.fill, "Corner", 2); sp(e.knob, "Corner", 3)
     e.min, e.max, e.dec, e.suffix, e.cb = min, max, dec or 0, suffix or "", cb
     e.drag = false
     function e:draw()
         local v = get(key)
         local a = (v - self.min) / (self.max - self.min)
-        self.val.Text = string.format("%." .. self.dec .. "f%s", v, self.suffix)
-        self.fill.Size = Vector2.new(self.track.Size.X * a, 4)
-        self.knob.Position = Vector2.new(self.track.Position.X + self.track.Size.X * a - 3, self.track.Position.Y - 3)
+        sp(self.val, "Text", string.format("%." .. self.dec .. "f%s", v, self.suffix))
+        sp(self.fill, "Size", Vector2.new(self.tr.Size.X * a, 4))
+        sp(self.knob, "Position", Vector2.new(self.tr.Position.X + self.tr.Size.X * a - 3, self.tr.Position.Y - 3))
     end
     function e:place(x, y)
-        self.txtLabel.Position = Vector2.new(x, y + 2)
-        self.val.Position      = Vector2.new(x + self.win_w - 52, y + 2)
-        self.track.Position    = Vector2.new(x, y + 22)
-        self.track.Size        = Vector2.new(self.win_w - 52, 4)
-        self.fill.Position     = Vector2.new(x, y + 22)
-        self.knob.Size         = Vector2.new(6, 10)
+        sp(self.txtLabel, "Position", Vector2.new(x, y + 2))
+        sp(self.val, "Position", Vector2.new(x + self.win_w - 52, y + 2))
+        sp(self.tr, "Position", Vector2.new(x, y + 22))
+        sp(self.tr, "Size", Vector2.new(self.win_w - 52, 4))
+        sp(self.fill, "Position", Vector2.new(x, y + 22))
+        sp(self.knob, "Size", Vector2.new(6, 10))
         self:draw()
     end
     e.hit = function(mx, my)
         if not e.match then return false end
-        local p = e.track.Position
-        if mx >= p.X - 4 and mx <= p.X + e.track.Size.X + 4 and my >= p.Y - 8 and my <= p.Y + 14 then
+        local p = e.tr.Position
+        if mx >= p.X - 4 and mx <= p.X + e.tr.Size.X + 4 and my >= p.Y - 8 and my <= p.Y + 14 then
             e.drag = true
             return true
         end
@@ -514,10 +507,10 @@ function Section:Slider(name, key, min, max, def, dec, suffix, cb)
     end
     e.update = function(mx)
         if not e.drag then return end
-        local p = e.track.Position
-        local a = clamp((mx - p.X) / math.max(e.track.Size.X, 1), 0, 1)
+        local p = e.tr.Position
+        local a = clamp((mx - p.X) / math.max(e.tr.Size.X, 1), 0, 1)
         local m = 10 ^ e.dec
-        set(key, math.floor((self.min + (self.max - self.min) * a) * m + 0.5) / m)
+        set(key, math.floor((e.min + (e.max - e.min) * a) * m + 0.5) / m)
         e:draw()
         if e.cb then pcall(e.cb, get(key)) end
     end
@@ -532,29 +525,28 @@ function Section:Dropdown(name, key, options, def, cb)
     e.box    = rect(e, T.panel2, true, 0)
     e.stroke = rect(e, T.stroke, false, 0, 1)
     e.cur    = label(e, 11, T.sub, tostring(def), false, FONT.UI)
-    sp(e.box, "Corner", 3)
-    sp(e.stroke, "Corner", 3)
+    sp(e.box, "Corner", 3); sp(e.stroke, "Corner", 3)
     function e:place(x, y)
-        self.txtLabel.Position = Vector2.new(x, y + 5)
-        self.box.Position      = Vector2.new(x + self.win_w - 116, y + 3)
-        self.box.Size          = Vector2.new(104, 18)
-        self.stroke.Position   = Vector2.new(x + self.win_w - 116, y + 3)
-        self.stroke.Size       = Vector2.new(104, 18)
-        self.cur.Position      = Vector2.new(x + self.win_w - 110, y + 6)
-        self.cur.Text          = tostring(get(key))
-        self.ox, self.oy       = x + self.win_w - 116, y + 22
+        sp(self.txtLabel, "Position", Vector2.new(x, y + 5))
+        sp(self.box, "Position", Vector2.new(x + self.win_w - 116, y + 3))
+        sp(self.box, "Size", Vector2.new(104, 18))
+        sp(self.stroke, "Position", Vector2.new(x + self.win_w - 116, y + 3))
+        sp(self.stroke, "Size", Vector2.new(104, 18))
+        sp(self.cur, "Position", Vector2.new(x + self.win_w - 110, y + 6))
+        sp(self.cur, "Text", tostring(get(key)))
+        self.ox, self.oy = x + self.win_w - 116, y + 22
     end
     function e:build()
         for _, o in ipairs(self.pops) do kill(o) end
         self.pops = {}
         for i, opt in ipairs(self.opts) do
             local bg = rect(e, T.panel2, true, 0)
-            bg.Position = Vector2.new(self.ox, self.oy + (i - 1) * 18)
-            bg.Size = Vector2.new(104, 18); bg.ZIndex = 40; bg.Visible = self.open
-            sp(bg, "Corner", 2)
+            sp(bg, "Position", Vector2.new(self.ox, self.oy + (i - 1) * 18))
+            sp(bg, "Size", Vector2.new(104, 18))
+            sp(bg, "ZIndex", 40); sp(bg, "Visible", self.open); sp(bg, "Corner", 2)
             local tx = label(e, 11, T.text, opt, false, FONT.UI)
-            tx.Position = Vector2.new(self.ox + 6, self.oy + (i - 1) * 18 + 3)
-            tx.ZIndex = 41; tx.Visible = self.open
+            sp(tx, "Position", Vector2.new(self.ox + 6, self.oy + (i - 1) * 18 + 3))
+            sp(tx, "ZIndex", 41); sp(tx, "Visible", self.open)
             table.insert(self.pops, bg); table.insert(self.pops, tx)
         end
     end
@@ -588,17 +580,16 @@ function Section:Keybind(name, key, def)
     e.brd  = rect(e, T.stroke, false, 0, 1)
     e.txt  = label(e, 11, T.sub, vkName(def), true, FONT.UI)
     e.listen = false
-    sp(e.box, "Corner", 3)
-    sp(e.brd, "Corner", 3)
+    sp(e.box, "Corner", 3); sp(e.brd, "Corner", 3)
     function e:place(x, y)
-        self.txtLabel.Position = Vector2.new(x, y + 5)
-        self.box.Position      = Vector2.new(x + self.win_w - 76, y + 3)
-        self.box.Size          = Vector2.new(64, 18)
-        self.brd.Position      = Vector2.new(x + self.win_w - 76, y + 3)
-        self.brd.Size          = Vector2.new(64, 18)
-        self.txt.Position      = Vector2.new(x + self.win_w - 44, y + 6)
-        self.txt.Text          = self.listen and "[ ... ]" or vkName(get(key))
-        self.txt.Color         = self.listen and accent() or T.sub
+        sp(self.txtLabel, "Position", Vector2.new(x, y + 5))
+        sp(self.box, "Position", Vector2.new(x + self.win_w - 76, y + 3))
+        sp(self.box, "Size", Vector2.new(64, 18))
+        sp(self.brd, "Position", Vector2.new(x + self.win_w - 76, y + 3))
+        sp(self.brd, "Size", Vector2.new(64, 18))
+        sp(self.txt, "Position", Vector2.new(x + self.win_w - 44, y + 6))
+        sp(self.txt, "Text", self.listen and "[ ... ]" or vkName(get(key)))
+        sp(self.txt, "Color", self.listen and accent() or T.sub)
     end
     e.hit = function(mx, my)
         if not e.match then return false end
@@ -621,14 +612,13 @@ function Section:Button(name, cb)
     local e = base(self, 22, name)
     e.bg  = rect(e, T.panel2, true, 0)
     e.brd = rect(e, T.stroke, false, 0, 1)
-    sp(e.bg, "Corner", 3)
-    sp(e.brd, "Corner", 3)
+    sp(e.bg, "Corner", 3); sp(e.brd, "Corner", 3)
     function e:place(x, y)
-        self.txtLabel.Position = Vector2.new(x + 7, y + 4)
-        self.bg.Position       = Vector2.new(x, y + 1)
-        self.bg.Size           = Vector2.new(self.win_w - 46, 18)
-        self.brd.Position      = Vector2.new(x, y + 1)
-        self.brd.Size          = Vector2.new(self.win_w - 46, 18)
+        sp(self.txtLabel, "Position", Vector2.new(x + 7, y + 4))
+        sp(self.bg, "Position", Vector2.new(x, y + 1))
+        sp(self.bg, "Size", Vector2.new(self.win_w - 46, 18))
+        sp(self.brd, "Position", Vector2.new(x, y + 1))
+        sp(self.brd, "Size", Vector2.new(self.win_w - 46, 18))
     end
     e.hit = function(mx, my)
         if not e.match then return false end
@@ -645,9 +635,9 @@ end
 
 function Section:Label(str)
     local e = base(self, 14, str)
-    e.txtLabel.Color = T.sub
-    e.txtLabel.FontSize = 10
-    function e:place(x, y) self.txtLabel.Position = Vector2.new(x, y) end
+    sp(e.txtLabel, "Color", T.sub)
+    sp(e.txtLabel, "Size", 10)
+    function e:place(x, y) sp(self.txtLabel, "Position", Vector2.new(x, y)) end
     e.hit = function() return false end
     e:place(0, 0)
     return e
@@ -659,24 +649,22 @@ function Section:Colorpicker(name, key, def, cb)
     e.preview = rect(e, Color3.fromRGB(def[1], def[2], def[3]), true, 0)
     e.brd     = rect(e, T.stroke, false, 0, 1)
     e.open, e.pops = false, {}
-    sp(e.preview, "Corner", 3)
-    sp(e.brd, "Corner", 3)
+    sp(e.preview, "Corner", 3); sp(e.brd, "Corner", 3)
     function e:place(x, y)
-        self.txtLabel.Position = Vector2.new(x, y + 5)
-        self.preview.Position  = Vector2.new(x + self.win_w - 40, y + 4)
-        self.preview.Size      = Vector2.new(34, 16)
-        self.brd.Position      = Vector2.new(x + self.win_w - 40, y + 4)
-        self.brd.Size          = Vector2.new(34, 16)
-        self.ox, self.oy       = x + self.win_w - 130, y + 24
+        sp(self.txtLabel, "Position", Vector2.new(x, y + 5))
+        sp(self.preview, "Position", Vector2.new(x + self.win_w - 40, y + 4))
+        sp(self.preview, "Size", Vector2.new(34, 16))
+        sp(self.brd, "Position", Vector2.new(x + self.win_w - 40, y + 4))
+        sp(self.brd, "Size", Vector2.new(34, 16))
+        self.ox, self.oy = x + self.win_w - 130, y + 24
     end
     function e:build()
         for _, o in ipairs(self.pops) do kill(o) end
         self.pops = {}
         for i = 0, 25 do
-            local c = Color3.fromHSV(i / 25, 0.78, 1)
-            local p = rect(e, c, true, 0)
-            p.Position = Vector2.new(self.ox + i * 5, self.oy)
-            p.Size = Vector2.new(5, 12); p.ZIndex = 40; p.Visible = self.open
+            local p = rect(e, Color3.fromHSV(i / 25, 0.78, 1), true, 0)
+            sp(p, "Position", Vector2.new(self.ox + i * 5, self.oy))
+            sp(p, "Size", Vector2.new(5, 12)); sp(p, "ZIndex", 40); sp(p, "Visible", self.open)
             table.insert(self.pops, p)
         end
     end
@@ -686,7 +674,7 @@ function Section:Colorpicker(name, key, def, cb)
             if my >= self.oy and my <= self.oy + 12 and mx >= self.ox and mx <= self.ox + 130 then
                 local c = Color3.fromHSV(clamp((mx - self.ox) / 130, 0, 1), 0.78, 1)
                 set(key, { math.floor(c.R * 255), math.floor(c.G * 255), math.floor(c.B * 255) })
-                self.preview.Color = c
+                sp(self.preview, "Color", c)
                 if cb then pcall(cb, get(key)) end
                 return true
             end
@@ -703,7 +691,7 @@ function Section:Colorpicker(name, key, def, cb)
 end
 
 --=====================================================================
--- [6] CACHE / MATEMÁTICA DE JUEGO
+-- [6] CACHE / JUEGO
 --=====================================================================
 local Char, Hum, HRP
 
@@ -769,12 +757,11 @@ local function visiblePart(part)
     if not part then return false end
     local cam = camPos()
     if not cam then return true end
-    local dir = part.Position - cam
     local ok, hit = pcall(function()
         local params = RaycastParams.new()
         params.FilterType = Enum.RaycastFilterType.Exclude
         params.FilterDescendantsInstances = { Char, Camera }
-        return Workspace:Raycast(cam, dir, params)
+        return Workspace:Raycast(cam, part.Position - cam, params)
     end)
     if ok and hit ~= nil then return hit.Instance:IsDescendantOf(part.Parent) end
     return true
@@ -840,7 +827,6 @@ local function acquire()
     local mp = Vector2.new(m.X, m.Y)
     local fov = get("aim.fov")
     local best, bd = nil, fov
-    local mode = get("aim.target")
     for _, p in ipairs(Players:GetPlayers()) do
         if validTarget(p) then
             local hb = hitboxOf(p)
@@ -853,19 +839,19 @@ local function acquire()
             end
         end
     end
-    if best and mode == "Lowest HP" then
-        local low
+    if best and get("aim.target") == "Lowest HP" then
+        local low, lowHP
         for _, p in ipairs(Players:GetPlayers()) do
             if validTarget(p) then
                 local h = p.Character:FindFirstChildOfClass("Humanoid")
-                if h and h.Health > 0 and (not low or h.Health < low.Health) then
+                if h and h.Health > 0 and (not lowHP or h.Health < lowHP) then
                     local hb = hitboxOf(p)
                     local sp2 = hb and w2s(hb.Position)
-                    if sp2 and (sp2 - mp).Magnitude < fov then low = h end
+                    if sp2 and (sp2 - mp).Magnitude < fov then low, lowHP = p, h.Health end
                 end
             end
         end
-        if low then return low.Parent end
+        if low then return low end
     end
     return best
 end
@@ -921,11 +907,11 @@ local function resolvedPoint(p)
 end
 
 --=====================================================================
--- [8] FEATURES · AIM
+-- [8] AIM
 --=====================================================================
 local lastShot = 0
 
-local function doAim(dt)
+local function doAim()
     if not get("aim.enabled") then Target = nil return end
     if not Char or not Hum or Hum.Health <= 0 then return end
 
@@ -945,13 +931,13 @@ local function doAim(dt)
 
     local m = getMouse()
     local dx, dy = sp2.X - m.X, sp2.Y - m.Y
-    if math.abs(dx) < 1 and math.abs(dy) < 1 then
-        -- ya apuntando
-    elseif get("aim.silent") or get("aim.rage") then
-        moveAbs(sp2.X, sp2.Y)
-    else
-        local f = clamp((12 - clamp(get("aim.smooth"), 1, 30)) / 10, 0.04, 1)
-        moveRel(dx * f, dy * f)
+    if math.abs(dx) > 1 or math.abs(dy) > 1 then
+        if get("aim.silent") or get("aim.rage") then
+            moveAbs(sp2.X, sp2.Y)
+        else
+            local f = clamp((12 - clamp(get("aim.smooth"), 1, 30)) / 10, 0.04, 1)
+            moveRel(dx * f, dy * f)
+        end
     end
 
     if get("aim.auto_fire") and now() - lastShot > 1 / math.max(get("aim.fire_rate"), 1) then
@@ -980,21 +966,21 @@ local function doTrigger()
 end
 
 --=====================================================================
--- [9] FEATURES · ANTI-AIM
+-- [9] ANTI-AIM
 --=====================================================================
 local spinYaw = 0
 local function doAA(dt)
     if not get("aa.enabled") or not HRP then return end
-    local base = viewYaw()
-    local yaw = base + get("aa.yaw_offset")
+    local baseY = viewYaw()
+    local yaw = baseY + get("aa.yaw_offset")
 
     if get("aa.spin") then
         spinYaw = spinYaw + get("aa.spin_speed") * 360 * dt
         yaw = spinYaw
     elseif get("aa.jitter") then
-        yaw = base + (math.random() > 0.5 and get("aa.jitter_range") or -get("aa.jitter_range"))
+        yaw = baseY + (math.random() > 0.5 and get("aa.jitter_range") or -get("aa.jitter_range"))
     elseif get("aa.random") then
-        if math.random() > 0.88 then spinYaw = base + (math.random() - 0.5) * 180 end
+        if math.random() > 0.88 then spinYaw = baseY + (math.random() - 0.5) * 180 end
         yaw = spinYaw
     elseif get("aa.static") then
         yaw = get("aa.static_yaw")
@@ -1023,13 +1009,11 @@ local function doAA(dt)
     local ok = pcall(function()
         HRP.CFrame = CFrame.new(HRP.Position + off) * CFrame.Angles(math.rad(pitch), math.rad(yaw), 0)
     end)
-    if not ok then
-        pcall(function() HRP.Position = HRP.Position + off end)
-    end
+    if not ok then pcall(function() HRP.Position = HRP.Position + off end) end
 end
 
 --=====================================================================
--- [10] FEATURES · MOVIMIENTO
+-- [10] MOVIMIENTO
 --=====================================================================
 local VK_SPACE, VK_A, VK_D, VK_CTRL = 0x20, 0x41, 0x44, 0x11
 local grounded, lastJump, lastCrouch = true, 0, 0
@@ -1037,7 +1021,7 @@ local grounded, lastJump, lastCrouch = true, 0, 0
 local function doMove()
     if not Hum or not HRP then return end
     local v = HRP.AssemblyLinearVelocity
-    grounded = v and math.abs(v.Y) < 2.5 or false
+    grounded = v ~= nil and math.abs(v.Y) < 2.5
 
     if get("mv.bhop") and vkDown(VK_SPACE) and grounded and now() - lastJump > 0.12 then
         pcall(keypress, VK_SPACE); after(0.05, function() pcall(keyrelease, VK_SPACE) end)
@@ -1066,10 +1050,11 @@ local function doMove()
     end
 
     if get("mv.faststop") and grounded and v and v.Magnitude > 8 then
-        local dir = Vector3.new(v.X, 0, v.Z).Unit
         local ok, look = pcall(function() return Camera.CFrame.LookVector end)
         if ok and look then
-            local key = (Vector3.new(-look.Z, 0, look.X):Dot(dir) > 0) and VK_A or VK_D
+            local dir = Vector3.new(v.X, 0, v.Z).Unit
+            local right = Vector3.new(-look.Z, 0, look.X)
+            local key = (right:Dot(dir) > 0) and VK_A or VK_D
             pcall(keypress, key); after(0.05, function() pcall(keyrelease, key) end)
         end
     end
@@ -1156,67 +1141,66 @@ local function drawESP()
                 local w = math.max(2, h * 0.52)
                 local x = top.X - w / 2
                 local c = espColor(p)
-                local dist = math.floor((cam - hb.Position).Magnitude)
 
-                e.box.Visible = get("esp.box")
-                e.box.Position = Vector2.new(x, top.Y)
-                e.box.Size = Vector2.new(w, h)
-                e.box.Color = c
+                sp(e.box, "Visible", get("esp.box"))
+                sp(e.box, "Position", Vector2.new(x, top.Y))
+                sp(e.box, "Size", Vector2.new(w, h))
+                sp(e.box, "Color", c)
 
-                e.fill.Visible = get("esp.box") and get("esp.fill")
-                e.fill.Position = e.box.Position
-                e.fill.Size = e.box.Size
-                e.fill.Color = c
+                sp(e.fill, "Visible", get("esp.box") and get("esp.fill"))
+                sp(e.fill, "Position", Vector2.new(x, top.Y))
+                sp(e.fill, "Size", Vector2.new(w, h))
+                sp(e.fill, "Color", c)
 
-                e.cham.Visible = get("esp.chams")
-                e.cham.Position = Vector2.new(x - 2, top.Y - 2)
-                e.cham.Size = Vector2.new(w + 4, h + 4)
-                e.cham.Color = c
+                sp(e.cham, "Visible", get("esp.chams"))
+                sp(e.cham, "Position", Vector2.new(x - 2, top.Y - 2))
+                sp(e.cham, "Size", Vector2.new(w + 4, h + 4))
+                sp(e.cham, "Color", c)
 
-                e.name.Visible = get("esp.name")
-                e.name.Text = p.Name
-                e.name.Position = Vector2.new(top.X, top.Y - 17)
-                e.name.Color = c
+                sp(e.name, "Visible", get("esp.name"))
+                sp(e.name, "Text", p.Name)
+                sp(e.name, "Position", Vector2.new(top.X, top.Y - 17))
+                sp(e.name, "Color", c)
 
-                e.hp.Visible = get("esp.health")
-                e.hp.Text = "HP " .. math.floor(hum and hum.Health or 0)
-                e.hp.Position = Vector2.new(top.X, bot.Y + 2)
-                e.hp.Color = c
+                sp(e.hp, "Visible", get("esp.health"))
+                sp(e.hp, "Text", "HP " .. math.floor(hum and hum.Health or 0))
+                sp(e.hp, "Position", Vector2.new(top.X, bot.Y + 2))
+                sp(e.hp, "Color", c)
 
-                e.ar.Visible = get("esp.armor")
-                e.ar.Text = "AR " .. math.floor(tonumber(hb:GetAttribute("Armor")) or 0)
-                e.ar.Position = Vector2.new(top.X, bot.Y + 14)
-                e.ar.Color = c
+                sp(e.ar, "Visible", get("esp.armor"))
+                sp(e.ar, "Text", "AR " .. math.floor(tonumber(hb:GetAttribute("Armor")) or 0))
+                sp(e.ar, "Position", Vector2.new(top.X, bot.Y + 14))
+                sp(e.ar, "Color", c)
 
                 local wn = toolName(p)
-                e.wp.Visible = get("esp.weapon") and wn ~= ""
-                e.wp.Text = wn
-                e.wp.Position = Vector2.new(top.X, bot.Y + 26)
-                e.wp.Color = c
+                sp(e.wp, "Visible", get("esp.weapon") and wn ~= "")
+                sp(e.wp, "Text", wn)
+                sp(e.wp, "Position", Vector2.new(top.X, bot.Y + 26))
+                sp(e.wp, "Color", c)
 
-                e.ds.Visible = get("esp.dist")
-                e.ds.Text = tostring(dist) .. "m"
-                e.ds.Position = Vector2.new(top.X, bot.Y + 38)
-                e.ds.Color = c
+                sp(e.ds, "Visible", get("esp.dist"))
+                sp(e.ds, "Text", tostring(math.floor((cam - hb.Position).Magnitude)) .. "m")
+                sp(e.ds, "Position", Vector2.new(top.X, bot.Y + 38))
+                sp(e.ds, "Color", c)
 
                 if get("esp.tracer") then
-                    e.tracer.Visible = true
+                    sp(e.tracer, "Visible", true)
                     local m = getMouse()
-                    e.tracer.From = get("esp.tracer_origin") == "Mouse"
-                        and Vector2.new(m.X, m.Y) or Vector2.new(center().X, viewport().Y - 40)
-                    e.tracer.To = Vector2.new(top.X + w / 2, bot.Y)
-                    e.tracer.Color = c
-                else e.tracer.Visible = false end
+                    sp(e.tracer, "From", get("esp.tracer_origin") == "Mouse"
+                        and Vector2.new(m.X, m.Y) or Vector2.new(center().X, viewport().Y - 40))
+                    sp(e.tracer, "To", Vector2.new(top.X + w / 2, bot.Y))
+                    sp(e.tracer, "Color", c)
+                else sp(e.tracer, "Visible", false) end
 
                 if get("esp.hitbox") and hb then
                     local hp = w2s(hb.Position)
-                    e.hit.Visible = hp ~= nil
+                    sp(e.hit, "Visible", hp ~= nil)
                     if hp then
-                        e.hit.Position = Vector2.new(hp.X - 12, hp.Y - 12)
-                        e.hit.Size = Vector2.new(24, 24)
-                        e.hit.Color = colOf("esp.hb_color", { 255, 80, 80 })
+                        sp(e.hit, "Position", Vector2.new(hp.X - 12, hp.Y - 12))
+                        sp(e.hit, "Size", Vector2.new(24, 24))
+                        sp(e.hit, "Color", colOf("esp.hb_color", { 255, 80, 80 }))
                     end
-                else e.hit.Visible = false end
+                else sp(e.hit, "Visible", false) end
 
                 for i, pr in ipairs(SKEL) do
                     local l = e.skel[i]
@@ -1226,9 +1210,9 @@ local function drawESP()
                         local sa = a and w2s(a.Position)
                         local sb = b and w2s(b.Position)
                         if sa and sb then
-                            l.Visible = true; l.From = sa; l.To = sb; l.Color = c
-                        else l.Visible = false end
-                    else l.Visible = false end
+                            sp(l, "Visible", true); sp(l, "From", sa); sp(l, "To", sb); sp(l, "Color", c)
+                        else sp(l, "Visible", false) end
+                    else sp(l, "Visible", false) end
                 end
             else hide(e) end
         elseif e then hide(e) end
@@ -1248,41 +1232,42 @@ local function overlay()
     end
     local c = center()
 
-    ov.fov.Visible = get("esp.fov")
-    if ov.fov.Visible then
-        ov.fov.Position = c
-        ov.fov.Radius = get("aim.fov")
-        ov.fov.Color = colOf("esp.fov_color", { 255, 255, 255 })
+    sp(ov.fov, "Visible", get("esp.fov"))
+    if get("esp.fov") then
+        sp(ov.fov, "Position", c)
+        sp(ov.fov, "Radius", get("aim.fov"))
+        sp(ov.fov, "Color", colOf("esp.fov_color", { 255, 255, 255 }))
     end
 
     local xh = get("esp.crosshair")
     local g = get("esp.ch_gap")
     local cc = colOf("esp.ch_color", { 255, 255, 255 })
-    for i, l in ipairs(ov.ch) do l.Visible = xh; l.Color = cc end
+    for _, l in ipairs(ov.ch) do sp(l, "Visible", xh); sp(l, "Color", cc) end
     if xh then
-        ov.ch[1].From = Vector2.new(c.X - g - 7, c.Y); ov.ch[1].To = Vector2.new(c.X - g, c.Y)
-        ov.ch[2].From = Vector2.new(c.X + g, c.Y);       ov.ch[2].To = Vector2.new(c.X + g + 7, c.Y)
-        ov.ch[3].From = Vector2.new(c.X, c.Y - g - 7);   ov.ch[3].To = Vector2.new(c.X, c.Y - g)
-        ov.ch[4].From = Vector2.new(c.X, c.Y + g);       ov.ch[4].To = Vector2.new(c.X, c.Y + g + 7)
+        sp(ov.ch[1], "From", Vector2.new(c.X - g - 7, c.Y)); sp(ov.ch[1], "To", Vector2.new(c.X - g, c.Y))
+        sp(ov.ch[2], "From", Vector2.new(c.X + g, c.Y));     sp(ov.ch[2], "To", Vector2.new(c.X + g + 7, c.Y))
+        sp(ov.ch[3], "From", Vector2.new(c.X, c.Y - g - 7)); sp(ov.ch[3], "To", Vector2.new(c.X, c.Y - g))
+        sp(ov.ch[4], "From", Vector2.new(c.X, c.Y + g));     sp(ov.ch[4], "To", Vector2.new(c.X, c.Y + g + 7))
     end
 
-    ov.wm.Visible = get("esp.watermark")
-    if ov.wm.Visible then
-        ov.wm.Text = "MATCHA HVH v1.1"
-        ov.wm.Position = Vector2.new(14, 10)
+    sp(ov.wm, "Visible", get("esp.watermark"))
+    if get("esp.watermark") then
+        sp(ov.wm, "Text", "MATCHA HVH v1.2")
+        sp(ov.wm, "Position", Vector2.new(14, 10))
     end
 
-    ov.stat.Visible = get("esp.watermark") and Target ~= nil
-    if ov.stat.Visible and Target then
+    local showStat = get("esp.watermark") and Target ~= nil
+    sp(ov.stat, "Visible", showStat)
+    if showStat and Target then
         local hb = hitboxOf(Target)
         local sp2 = hb and w2s(hb.Position)
-        ov.stat.Text = string.format("%s | hc %d%%", Target.Name, math.floor(hitchance(Target)))
-        if sp2 then ov.stat.Position = Vector2.new(sp2.X + 14, sp2.Y - 6) end
+        sp(ov.stat, "Text", string.format("%s | hc %d%%", Target.Name, math.floor(hitchance(Target))))
+        if sp2 then sp(ov.stat, "Position", Vector2.new(sp2.X + 14, sp2.Y - 6)) end
     end
 end
 
 --=====================================================================
--- [13] COMBATE EXTRA
+-- [13] EXTRA
 --=====================================================================
 local lastHP = {}
 local function healthWatch()
@@ -1292,10 +1277,8 @@ local function healthWatch()
             local prev = lastHP[p] or h.MaxHealth
             if h.Health < prev - 0.5 then
                 local dmg = math.floor(prev - h.Health)
-                if dmg > 0 and dmg < 250 then
-                    if get("info.hitlog") then
-                        Notify("HIT", string.format("%s  -%d", p.Name, dmg), T.ok)
-                    end
+                if dmg > 0 and dmg < 250 and get("info.hitlog") then
+                    Notify("HIT", string.format("%s  -%d", p.Name, dmg), T.ok)
                 end
             end
             lastHP[p] = h.Health
@@ -1325,8 +1308,7 @@ function Notify(title, body, color)
     n.acc = rect(n, color or accent(), true, 0)
     n.t1  = label(n, 12, T.text, title, false, FONT.Bold)
     n.t2  = label(n, 11, T.sub, body, false, FONT.UI)
-    sp(n.bg, "Corner", 4)
-    sp(n.brd, "Corner", 4)
+    sp(n.bg, "Corner", 4); sp(n.brd, "Corner", 4)
     table.insert(Notifs, n)
 end
 local function drawNotifs(dt)
@@ -1339,20 +1321,20 @@ local function drawNotifs(dt)
             table.remove(Notifs, i)
         else
             local x = 20
-            n.bg.Position = Vector2.new(x, y); n.bg.Size = Vector2.new(212, 42)
-            n.brd.Position = Vector2.new(x, y); n.brd.Size = Vector2.new(212, 42)
-            n.acc.Position = Vector2.new(x, y); n.acc.Size = Vector2.new(2, 42)
-            n.t1.Position = Vector2.new(x + 10, y + 7)
-            n.t2.Position = Vector2.new(x + 10, y + 23)
+            sp(n.bg, "Position", Vector2.new(x, y)); sp(n.bg, "Size", Vector2.new(212, 42))
+            sp(n.brd, "Position", Vector2.new(x, y)); sp(n.brd, "Size", Vector2.new(212, 42))
+            sp(n.acc, "Position", Vector2.new(x, y)); sp(n.acc, "Size", Vector2.new(2, 42))
+            sp(n.t1, "Position", Vector2.new(x + 10, y + 7))
+            sp(n.t2, "Position", Vector2.new(x + 10, y + 23))
             y = y + 50
         end
     end
 end
 
 --=====================================================================
--- [15] CONSTRUCCIÓN DEL MENÚ
+-- [15] MENÚ
 --=====================================================================
-local Lib = UI.new("MATCHA", "hvh framework · v1.1")
+local Lib = UI.new("MATCHA", "hvh framework · v1.2")
 Lib.Notify = Notify
 
 local tAim = Tab.new(Lib, "AIMBOT")
@@ -1362,7 +1344,7 @@ sA1:Toggle("Silent Aim", "aim.silent", false)
 sA1:Toggle("Ragebot", "aim.rage", false)
 sA1:Toggle("Legitbot", "aim.legit", true)
 sA1:Keybind("Aim Key", "aim.key", 0x45)
-sA1:Dropdown("Target Selection", "aim.target", { "Nearest", "Lowest HP", "Distance" }, "Nearest")
+sA1:Dropdown("Target Selection", "aim.target", { "Nearest", "Lowest HP" }, "Nearest")
 sA1:Dropdown("Hitbox", "aim.hitbox", HITBOXES, "Head")
 sA1:Slider("FOV", "aim.fov", 20, 700, 150, 0, "px")
 sA1:Slider("Smooth", "aim.smooth", 1, 30, 6, 0, "x")
@@ -1402,7 +1384,6 @@ sB1:Slider("Pitch", "aa.pitch", -89, 89, -89, 0, "deg")
 sB1:Toggle("Fake Pitch", "aa.fake_pitch", false)
 sB1:Toggle("Inverter", "aa.inverter", false)
 sB1:Slider("Yaw Offset", "aa.yaw_offset", -180, 180, 0, 0, "deg")
-
 local sB2 = Section.new(tAA, "MODES")
 sB2:Toggle("Spinbot", "aa.spin", false)
 sB2:Slider("Spin Speed", "aa.spin_speed", 1, 60, 14, 0, "r/s")
@@ -1411,7 +1392,6 @@ sB2:Slider("Jitter Range", "aa.jitter_range", 1, 90, 25, 0, "deg")
 sB2:Toggle("Random Yaw", "aa.random", false)
 sB2:Toggle("Static Yaw", "aa.static", false)
 sB2:Slider("Static Angle", "aa.static_yaw", -180, 180, 90, 0, "deg")
-
 local sB3 = Section.new(tAA, "ADVANCED")
 sB3:Toggle("Desync", "aa.desync", false)
 sB3:Slider("Desync Amount", "aa.desync_amt", 0, 100, 35, 0, "%")
@@ -1457,7 +1437,6 @@ sD1:Toggle("Health Color", "esp.health_color", true)
 sD1:Toggle("Team Color", "esp.team_color", true)
 sD1:Colorpicker("ESP Color", "esp.color", { 255, 255, 255 })
 sD1:Colorpicker("Hitbox Color", "esp.hb_color", { 255, 80, 80 })
-
 local sD2 = Section.new(tVis, "OVERLAY")
 sD2:Toggle("Chams", "esp.chams", false)
 sD2:Toggle("Glow ESP", "esp.glow", false)
@@ -1544,14 +1523,14 @@ local sH3 = Section.new(tMs, "COSMETIC")
 sH3:Toggle("Skin Changer", "misc.skin", false)
 sH3:Button("Clan Tag Changer", function() Notify("MISC", "clan tag", T.sub) end)
 
-Lib:show(true)
 Lib.tab = tAim
 Lib:apply()
+Lib:show(true)
 
 --=====================================================================
 -- [16] INTERACCIÓN
 --=====================================================================
-local function forEachElement(fn)
+local function forEach(fn)
     for _, t in ipairs(Lib.tabs) do
         for _, s in ipairs(t.sections) do
             for _, e in ipairs(s.items) do fn(e) end
@@ -1560,7 +1539,6 @@ local function forEachElement(fn)
 end
 
 local function routeClick(mx, my)
-    -- ventana
     if mx >= Lib.x + Lib.w - 26 and mx <= Lib.x + Lib.w and my >= Lib.y + 6 and my <= Lib.y + 28 then
         Lib.open = false; Lib:show(false); Lib:setInput(true); return
     end
@@ -1574,18 +1552,16 @@ local function routeClick(mx, my)
     end
     if Lib.min then return end
 
-    -- search
-    local sp2 = Lib.sBox.Position
-    if mx >= sp2.X and mx <= sp2.X + Lib.sBox.Size.X and my >= sp2.Y and my <= sp2.Y + Lib.sBox.Size.Y then
+    local sb = Lib.sBox.Position
+    if mx >= sb.X and mx <= sb.X + Lib.sBox.Size.X and my >= sb.Y and my <= sb.Y + Lib.sBox.Size.Y then
         Lib.searchFocus = not Lib.searchFocus
         if not Lib.searchFocus then
-            Lib.search = ""; Lib.sTxt.Text = "buscar..."
+            Lib.search = ""; sp(Lib.sTxt, "Text", "buscar...")
             for _, t in ipairs(Lib.tabs) do t:search("") end
         end
         return
     end
 
-    -- tabs
     for _, t in ipairs(Lib.tabs) do
         local b = t.btn.Position
         if mx >= b.X and mx <= b.X + t.btn.Size.X and my >= b.Y and my <= b.Y + t.btn.Size.Y then
@@ -1596,44 +1572,35 @@ local function routeClick(mx, my)
         end
     end
 
-    -- elementos
     if Lib.tab then
         for _, s in ipairs(Lib.tab.sections) do
             for _, e in ipairs(s.items) do
-                if e.hit then
-                    local r = e.hit(mx, my)
-                    if r then return end
-                end
+                if e.hit and e.hit(mx, my) then return end
             end
         end
     end
 end
 
 local function routeDrag(mx)
-    forEachElement(function(e)
-        if e.drag and e.update then e.update(mx) end
-    end)
+    forEach(function(e) if e.drag and e.update then e.update(mx) end end)
 end
 
 local function clearDrag()
-    forEachElement(function(e) e.drag = false end)
+    forEach(function(e) e.drag = false end)
     Lib.drag = false
 end
 
 local function scrollBy(d)
     if not Lib.open or Lib.min or not Lib.tab then return end
-    local maxS = math.max(0, (Lib.tab.total or 0) - (Lib.h - 60))
-    Lib.tab.scroll = clamp(Lib.tab.scroll - d, 0, maxS)
+    Lib.tab.scroll = clamp(Lib.tab.scroll - d, 0, math.max(0, (Lib.tab.total or 0) - (Lib.h - 60)))
     Lib.tab:layout()
     Lib:scrollbar()
 end
 
 local function captureKey(vk)
-    local captured = false
-    forEachElement(function(e)
-        if e.capture and e.capture(vk) then captured = true end
-    end)
-    return captured
+    local done = false
+    forEach(function(e) if e.capture and e.capture(vk) then done = true end end)
+    return done
 end
 
 local function typeChar(vk)
@@ -1644,7 +1611,7 @@ local function typeChar(vk)
     elseif ch and #ch == 1 then
         if #Lib.search < 18 then Lib.search = Lib.search .. ch:lower() end
     else return end
-    Lib.sTxt.Text = Lib.search == "" and "buscar..." or Lib.search
+    sp(Lib.sTxt, "Text", Lib.search == "" and "buscar..." or Lib.search)
     for _, t in ipairs(Lib.tabs) do t:search(Lib.search) end
 end
 
@@ -1652,8 +1619,7 @@ end
 -- [17] LOOP
 --=====================================================================
 local MENU_VK = 0x2D
-local lastMenu, lastDown = false, false
-local lastArrow = 0
+local lastMenu, lastDown, lastArrow = false, false, 0
 
 local function step(dt)
     if not _G.MHVH.running then return end
@@ -1661,7 +1627,6 @@ local function step(dt)
     getMouse()
     runTimers()
 
-    -- toggle menú
     local mdown = vkDown(MENU_VK)
     if mdown and not lastMenu then
         Lib.open = not Lib.open
@@ -1671,10 +1636,8 @@ local function step(dt)
     end
     lastMenu = mdown
 
-    -- mouse
-    local down = false
     local okd, d = pcall(ismouse1pressed)
-    if okd then down = d == true end
+    local down = okd and d == true
     local mx, my = Mouse.X, Mouse.Y
 
     if Lib.open and not Lib.min then
@@ -1691,8 +1654,7 @@ local function step(dt)
     if not down then Lib.drag = false end
     lastDown = down
 
-    -- gameplay
-    pcall(doAim, dt)
+    pcall(doAim)
     pcall(doTrigger)
     pcall(doAA, dt)
     pcall(doMove)
@@ -1718,7 +1680,7 @@ local function step(dt)
 end
 
 --=====================================================================
--- [18] INPUT EVENTS (captura de teclas)
+-- [18] INPUT
 --=====================================================================
 if UIS then
     track(UIS.InputBegan:Connect(function(input)
@@ -1744,12 +1706,10 @@ _G.MHVH.unload = function()
 end
 
 Lib:setInput(false)
-Notify("MATCHA HVH", "v1.1 cargado · INSERT abre", T.ok)
+Notify("MATCHA HVH", "v1.2 cargado · INSERT abre", T.ok)
 
 if RunService then
-    track(RunService.RenderStepped:Connect(function(dt)
-        pcall(step, dt)
-    end))
+    track(RunService.RenderStepped:Connect(function(dt) pcall(step, dt) end))
 else
     task.spawn(function()
         while _G.MHVH.running do
