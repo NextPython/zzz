@@ -1,0 +1,1597 @@
+--=====================================================================
+--  MATCHA EXTERNAL · HVH FRAMEWORK  v1.0
+--  Arquitectura: Bridge -> Config -> UI Lib -> Cache -> Features -> Render
+--  UI: flat dark, animada, arrastrable, search, scroll, keybinds
+--  Sin key, sin dependencias externas, todo protegido con pcall
+--=====================================================================
+
+if _G.MHVH and _G.MHVH.unload then pcall(_G.MHVH.unload) end
+_G.MHVH = { conns = {}, objs = {}, running = true }
+
+--=====================================================================
+-- [0] BOOTSTRAP
+--=====================================================================
+local ok_sv, Services = pcall(function()
+    local s = setmetatable({}, { __index = function(t, k)
+        local ok, r = pcall(function() return game:GetService(k) end)
+        if ok and r then rawset(t, k, r) return r end
+    end })
+    return s
+end)
+
+local Players      = ok_sv and Services.Players
+local RunService   = ok_sv and Services.RunService
+local UIS          = ok_sv and Services.UserInputService
+local Workspace    = ok_sv and Services.Workspace
+local Lighting     = ok_sv and Services.Lighting
+local HttpService  = ok_sv and Services.HttpService
+local Camera       = Workspace and Workspace.CurrentCamera
+
+local function track(c) table.insert(_G.MHVH.conns, c) return c end
+local function mk(class)
+    local ok, o = pcall(function() return Drawing.new(class) end)
+    if ok then table.insert(_G.MHVH.objs, o) end
+    return o
+end
+local function kill(o) if o then pcall(function() o:Remove() end) end end
+
+local function lerp(a, b, t) return a + (b - a) * t end
+local function clamp(v, a, b) return v < a and a or (v > b and b or v) end
+
+--=====================================================================
+-- [1] API BRIDGE  <-- EDITAR SOLO SI TU BUILD USA OTROS NOMBRES
+--=====================================================================
+local function resolve(...)
+    for i = 1, select("#", ...) do
+        local n = select(i, ...)
+        local f = rawget(_G, n)
+        if type(f) == "function" then return f end
+    end
+end
+
+local API = {
+    moveRel    = resolve("mousemoverel", "mouse_move_rel", "MouseMoveRel", "input_move_mouse"),
+    setMouse   = resolve("mousemoveabs", "set_mouse_position", "SetMousePosition", "input_set_mouse"),
+    getMouse   = resolve("get_mouse_position", "GetMousePosition", "mouse_get_position"),
+    click      = resolve("mouse1click", "mouse_click", "MouseClick", "input_click"),
+    press      = resolve("mouse1press", "mouse_press", "input_mouse_down"),
+    release    = resolve("mouse1release", "mouse_release", "input_mouse_up"),
+    keyPress   = resolve("keypress", "key_press", "input_key_down"),
+    keyRelease = resolve("keyrelease", "key_release", "input_key_up"),
+    writeFile  = resolve("writefile"),
+    readFile   = resolve("readfile"),
+    isFile     = resolve("isfile"),
+    makeFolder = resolve("makefolder"),
+    isFolder   = resolve("isfolder"),
+    delFile    = resolve("delfile"),
+}
+
+-- Cursor interno (fallback si el external no expone posición)
+local Mouse = { X = 0, Y = 0 }
+local function getMouse()
+    if API.getMouse then
+        local ok, x, y = pcall(API.getMouse)
+        if ok and type(x) == "number" then Mouse.X, Mouse.Y = x, y; return Mouse end
+    end
+    if UIS then
+        local ok, v = pcall(function() return UIS:GetMouseLocation() end)
+        if ok and v then Mouse.X, Mouse.Y = v.X, v.Y end
+    end
+    return Mouse
+end
+local function moveMouse(dx, dy)
+    if API.moveRel then pcall(API.moveRel, dx, dy)
+    elseif API.setMouse then pcall(API.setMouse, Mouse.X + dx, Mouse.Y + dy) end
+    Mouse.X, Mouse.Y = Mouse.X + dx, Mouse.Y + dy
+end
+local function setMouse(x, y)
+    if API.setMouse then pcall(API.setMouse, x, y) end
+    Mouse.X, Mouse.Y = x, y
+end
+local function press() if API.press then pcall(API.press) elseif API.click then pcall(API.click) end end
+local function release() if API.release then pcall(API.release) end end
+local function keyPress(k) if API.keyPress then pcall(API.keyPress, k) end end
+local function keyRelease(k) if API.keyRelease then pcall(API.keyRelease, k) end end
+
+--=====================================================================
+-- [2] CONFIG + SCHEMA
+--=====================================================================
+local Cfg, Defaults = {}, {}
+local function reg(key, def)
+    Defaults[key] = def
+    if Cfg[key] == nil then Cfg[key] = def end
+end
+local function get(key) return Cfg[key] end
+local function set(key, v) Cfg[key] = v end
+
+local DIR = "matcha_hvh"
+local function ensureDir()
+    if API.isFolder and API.makeFolder and not API.isFolder(DIR) then pcall(API.makeFolder, DIR) end
+end
+local function serialize()
+    local out = { "-- matcha_hvh config" }
+    for k, d in pairs(Defaults) do
+        local v = Cfg[k]
+        local tv = type(v)
+        if tv == "boolean" or tv == "number" or tv == "string" then
+            table.insert(out, k .. "=" .. tostring(v))
+        elseif tv == "table" and #v == 3 then
+            table.insert(out, k .. "=" .. table.concat(v, ","))
+        end
+    end
+    return table.concat(out, "\n")
+end
+local function deserialize(txt)
+    for line in txt:gmatch("[^\r\n]+") do
+        if not line:match("^%-%-") then
+            local k, v = line:match("^([%w_%.]+)=(.*)$")
+            if k and Defaults[k] ~= nil then
+                local dt = type(Defaults[k])
+                if dt == "boolean" then Cfg[k] = (v == "true")
+                elseif dt == "number" then Cfg[k] = tonumber(v) or Defaults[k]
+                elseif dt == "string" then Cfg[k] = v
+                elseif dt == "table" then
+                    local t = {}
+                    for n in v:gmatch("[^,]+") do table.insert(t, tonumber(n) or 0) end
+                    if #t == 3 then Cfg[k] = t end
+                end
+            end
+        end
+    end
+end
+local function saveConfig(name)
+    if not API.writeFile then return false end
+    ensureDir()
+    local ok = pcall(API.writeFile, DIR .. "/" .. name .. ".cfg", serialize())
+    return ok
+end
+local function loadConfig(name)
+    if not API.readFile then return false end
+    local ok, txt = pcall(API.readFile, DIR .. "/" .. name .. ".cfg")
+    if ok and txt then deserialize(txt) return true end
+    return false
+end
+
+--=====================================================================
+-- [3] UI LIBRARY
+--=====================================================================
+local T = {
+    bg      = Color3.fromRGB(13, 13, 16),
+    panel   = Color3.fromRGB(19, 19, 23),
+    panel2  = Color3.fromRGB(25, 25, 31),
+    stroke  = Color3.fromRGB(37, 37, 45),
+    text    = Color3.fromRGB(232, 232, 238),
+    sub     = Color3.fromRGB(126, 126, 142),
+    accent  = Color3.fromRGB(126, 92, 255),
+    ok      = Color3.fromRGB(92, 219, 143),
+    bad     = Color3.fromRGB(240, 92, 92),
+    font    = 2,
+}
+local ACCENT = { 126, 92, 255 }
+local function accentColor(a)
+    local c = Color3.fromRGB(ACCENT[1], ACCENT[2], ACCENT[3])
+    if a then return c:Lerp(T.bg, a) end
+    return c
+end
+
+local function rect(parent, color, filled, trans, thick)
+    local o = mk("Square")
+    if not o then return nil end
+    o.Color = color; o.Filled = filled or false
+    o.Transparency = trans or 0; o.Thickness = thick or 1
+    o.Visible = false; o.ZIndex = parent and parent.z or 2
+    if parent and parent.objects then table.insert(parent.objects, o) end
+    return o
+end
+local function text(parent, size, color, str, center)
+    local o = mk("Text")
+    if not o then return nil end
+    o.Text = str or ""; o.Size = size; o.Color = color
+    o.Center = center or false; o.Font = T.font
+    o.Outline = true; o.OutlineColor = Color3.new(0, 0, 0)
+    o.Visible = false; o.ZIndex = parent and parent.z or 3
+    if parent and parent.objects then table.insert(parent.objects, o) end
+    return o
+end
+local function line(parent, color, thick)
+    local o = mk("Line")
+    if not o then return nil end
+    o.Color = color; o.Thickness = thick or 1
+    o.Transparency = 0; o.Visible = false
+    o.ZIndex = parent and parent.z or 3
+    if parent and parent.objects then table.insert(parent.objects, o) end
+    return o
+end
+
+local UI = {}
+UI.__index = UI
+
+function UI.new(title, sub)
+    local self = setmetatable({}, UI)
+    self.objects, self.z = {}, 10
+    self.tabs, self.tab = {}, nil
+    self.x, self.y = 180, 140
+    self.w, self.h = 720, 480
+    self.open, self.min, self.search = true, false, ""
+    self.drag, self.dragOff = false, Vector2.new()
+
+    self.frame   = rect(self, T.bg, true, 0.04)
+    self.outline = rect(self, T.stroke, false, 0, 1)
+    self.bar     = rect(self, T.panel, true, 0)
+    self.accentL = rect(self, accentColor(), true, 0)
+    self.side    = rect(self, T.panel, true, 0)
+    self.logo    = text(self, 15, T.text, title)
+    self.logo2   = text(self, 11, T.sub, sub)
+    self.close   = text(self, 15, T.sub, "×", true)
+    self.mini    = text(self, 14, T.sub, "–", true)
+    self.sBox    = rect(self, T.panel2, true, 0)
+    self.sTxt    = text(self, 12, T.sub, "buscar...")
+    self.content = rect(self, T.bg, true, 0)
+
+    self:apply()
+    return self
+end
+
+function UI:apply()
+    local w, h = self.w, self.min and 42 or self.h
+    self.frame.Position  = Vector2.new(self.x, self.y)
+    self.frame.Size      = Vector2.new(w, h)
+    self.outline.Position = Vector2.new(self.x, self.y)
+    self.outline.Size     = Vector2.new(w, h)
+    self.bar.Position    = Vector2.new(self.x, self.y)
+    self.bar.Size        = Vector2.new(w, 42)
+    self.accentL.Position = Vector2.new(self.x, self.y)
+    self.accentL.Size    = Vector2.new(w, 2)
+    self.side.Position   = Vector2.new(self.x, self.y + 42)
+    self.side.Size       = Vector2.new(150, h - 42)
+    self.logo.Position   = Vector2.new(self.x + 14, self.y + 9)
+    self.logo2.Position  = Vector2.new(self.x + 14, self.y + 26)
+    self.close.Position  = Vector2.new(self.x + w - 18, self.y + 12)
+    self.mini.Position   = Vector2.new(self.x + w - 40, self.y + 12)
+    self.sBox.Position   = Vector2.new(self.x + 160, self.y + 8)
+    self.sBox.Size       = Vector2.new(w - 216, 26)
+    self.sTxt.Position   = Vector2.new(self.x + 168, self.y + 13)
+    self.content.Position = Vector2.new(self.x + 150, self.y + 42)
+    self.content.Size     = Vector2.new(w - 150, h - 42)
+    for _, t in ipairs(self.tabs) do t:layout() end
+end
+
+function UI:visible(v)
+    for _, o in ipairs(self.objects) do if o then pcall(function() o.Visible = v end) end end
+    if not v then
+        for _, t in ipairs(self.tabs) do t:visible(false) end
+    else
+        for _, t in ipairs(self.tabs) do t:visible(t == self.tab) end
+    end
+end
+
+function UI:Tab(name)
+    local tab = { win = self, name = name, sections = {}, objects = {}, z = 11, scroll = 0, contentY = self.y + 50 }
+    tab.btn     = rect(tab, T.panel, true, 0)
+    tab.btnTxt  = text(tab, 12, T.sub, name)
+    tab.pill    = rect(tab, accentColor(), true, 0)
+    self.tabs[#self.tabs + 1] = tab
+    if not self.tab then self:select(tab) end
+    self:apply()
+    return tab
+end
+
+function UI:select(tab)
+    if self.tab then self.tab:visible(false) end
+    self.tab = tab
+    tab:visible(true)
+    for _, t in ipairs(self.tabs) do
+        local on = (t == tab)
+        if t.btnTxt then t.btnTxt.Color = on and T.text or T.sub end
+        if t.pill then t.pill.Visible = on end
+        if t.btn then t.btn.Color = on and T.panel2 or T.panel end
+    end
+end
+
+function UI:click(x, y)
+    if not self.open then return end
+    if x >= self.x + self.w - 26 and x <= self.x + self.w and y >= self.y + 6 and y <= self.y + 28 then
+        self.open = false; self:visible(false); return "close" end
+    if x >= self.x + self.w - 48 and x <= self.x + self.w - 28 and y >= self.y + 6 and y <= self.y + 28 then
+        self.min = not self.min; self:apply(); return "min" end
+    if not self.min and y >= self.y and y <= self.y + 42 then self.drag = true; self.dragOff = Vector2.new(x - self.x, y - self.y) end
+    if self.min then return end
+    for _, t in ipairs(self.tabs) do
+        if x >= t.btn.Position.X and x <= t.btn.Position.X + t.btn.Size.X
+        and y >= t.btn.Position.Y and y <= t.btn.Position.Y + t.btn.Size.Y then
+            self:select(t) return
+        end
+    end
+end
+
+-- ---- Section ----
+local Section = {}
+Section.__index = Section
+function Section.new(tab, name, desc)
+    local s = setmetatable({}, Section)
+    s.tab, s.items, s.objects, s.z = tab, {}, {}, 12
+    s.h, s.baseY, s.x, s.pad = 30, 0, tab.win.x + 158, 12
+    s.bg     = rect(s, T.panel, true, 0)
+    s.stroke = rect(s, T.stroke, false, 0, 1)
+    s.title  = text(s, 12, T.text, name)
+    s.desc   = desc and text(s, 10, T.sub, desc) or nil
+    s.y = 0
+    table.insert(tab.sections, s)
+    tab:layout()
+    return s
+end
+function Section:visible(v)
+    for _, o in ipairs(self.objects) do if o then pcall(function() o.Visible = v end) end end
+    for _, e in ipairs(self.items) do e:visible(v and e.match) end
+    self.on = v
+end
+function Section:layout()
+    local y = self.desc and 42 or 30
+    for _, e in ipairs(self.items) do
+        if e.match then e.place(self.x + self.pad, self.baseY + y); y = y + e.h + 6 end
+    end
+    self.h = y + self.pad
+    self.bg.Position     = Vector2.new(self.x, self.baseY)
+    self.bg.Size         = Vector2.new(self.tab.win.w - 166, self.h)
+    self.stroke.Position = Vector2.new(self.x, self.baseY)
+    self.stroke.Size     = Vector2.new(self.tab.win.w - 166, self.h)
+    self.title.Position  = Vector2.new(self.x + self.pad, self.baseY + 10)
+    if self.desc then self.desc.Position = Vector2.new(self.x + self.pad, self.baseY + 25) end
+end
+
+function Section:search(q)
+    for _, e in ipairs(self.items) do
+        e.match = (q == "") or (e.label and e.label.Text:lower():find(q, 1, true) ~= nil)
+    end
+    self.tab:layout()
+end
+
+-- ---- Elementos ----
+local El = {}
+El.__index = El
+function El:visible(v) for _, o in ipairs(self.objects) do if o then pcall(function() o.Visible = v end) end end end
+
+local function base(section, h, labelText)
+    local e = setmetatable({ objects = {}, h = h, match = true }, El)
+    e.label = text(e, 12, T.text, labelText)
+    table.insert(e.objects, e.label)
+    table.insert(section.items, e)
+    return e
+end
+
+function Section:Toggle(label, key, def, cb)
+    reg(key, def)
+    local e = base(self, 24, label)
+    e.box   = rect(e, T.panel2, true, 0)
+    e.stroke= rect(e, T.stroke, false, 0, 1)
+    e.dot   = rect(e, accentColor(), true, 0)
+    function e:place(x, y)
+        self.label.Position = Vector2.new(x, y + 5)
+        self.box.Position   = Vector2.new(x + self.win_w - 46, y + 4)
+        self.box.Size       = Vector2.new(34, 16)
+        self.stroke.Position= Vector2.new(x + self.win_w - 46, y + 4)
+        self.stroke.Size    = Vector2.new(34, 16)
+        local on = get(key)
+        self.dot.Position = Vector2.new(on and (x + self.win_w - 30) or (x + self.win_w - 44), y + 6)
+        self.dot.Size     = Vector2.new(12, 12)
+        self.dot.Color    = on and accentColor() or T.sub
+        self.label.Color  = on and T.text or T.sub
+    end
+    e.hit = function(x, y)
+        if not e.match then return false end
+        local p = e.box.Position
+        if x >= p.X - 6 and x <= p.X + 44 and y >= p.Y - 4 and y <= p.Y + 24 then
+            set(key, not get(key)); e:place(e.label.Position.X, e.label.Position.Y - 5)
+            if cb then cb(get(key)) end
+            return true
+        end
+        return false
+    end
+    e:place(0, 0)
+    return e
+end
+
+function Section:Slider(label, key, min, max, def, dec, suffix, cb)
+    reg(key, def)
+    local e = base(self, 38, label)
+    e.val   = text(e, 12, accentColor(), tostring(def))
+    e.track = rect(e, T.panel2, true, 0)
+    e.fill  = rect(e, accentColor(), true, 0)
+    e.knob  = rect(e, T.text, true, 0)
+    e.min, e.max, e.dec, e.suffix, e.cb = min, max, dec or 0, suffix or "", cb
+    e.drag = false
+    function e:draw()
+        local v = get(key)
+        local a = (v - self.min) / (self.max - self.min)
+        self.val.Text = string.format("%." .. self.dec .. "f%s", v, self.suffix)
+        self.fill.Size = Vector2.new((self.track.Size.X) * a, 4)
+        self.knob.Position = Vector2.new(self.track.Position.X + self.track.Size.X * a - 3, self.track.Position.Y - 3)
+    end
+    function e:place(x, y)
+        self.label.Position = Vector2.new(x, y + 2)
+        self.val.Position   = Vector2.new(x + self.win_w - 46, y + 2)
+        self.track.Position = Vector2.new(x, y + 22)
+        self.track.Size     = Vector2.new(self.win_w - 46, 4)
+        self.fill.Position  = Vector2.new(x, y + 22)
+        self.knob.Size      = Vector2.new(6, 10)
+        self:draw()
+    end
+    e.hit = function(x, y)
+        if not e.match then return false end
+        local p = e.track.Position
+        if x >= p.X - 4 and x <= p.X + e.track.Size.X + 4 and y >= p.Y - 8 and y <= p.Y + 14 then
+            e.drag = true; return "slider"
+        end
+        return false
+    end
+    e.update = function(mx)
+        if not e.drag then return end
+        local p = e.track.Position
+        local a = clamp((mx - p.X) / e.track.Size.X, 0, 1)
+        local v = self.min + (self.max - self.min) * a
+        local m = 10 ^ e.dec
+        set(key, math.floor(v * m + 0.5) / m)
+        e:draw(); if e.cb then e.cb(get(key)) end
+    end
+    e:place(0, 0)
+    return e
+end
+
+function Section:Dropdown(label, key, options, def, cb)
+    reg(key, def)
+    local e = base(self, 24, label)
+    e.opts, e.open = options, false
+    e.box    = rect(e, T.panel2, true, 0)
+    e.stroke = rect(e, T.stroke, false, 0, 1)
+    e.cur    = text(e, 11, T.sub, tostring(def))
+    function e:place(x, y)
+        self.label.Position = Vector2.new(x, y + 5)
+        self.box.Position   = Vector2.new(x + self.win_w - 116, y + 3)
+        self.box.Size       = Vector2.new(104, 18)
+        self.stroke.Position= Vector2.new(x + self.win_w - 116, y + 3)
+        self.stroke.Size    = Vector2.new(104, 18)
+        self.cur.Position   = Vector2.new(x + self.win_w - 110, y + 6)
+        self.cur.Text       = tostring(get(key))
+        self.ox, self.oy    = x + self.win_w - 116, y + 22
+    end
+    e.pops = {}
+    function e:build()
+        for _, o in ipairs(self.pops) do kill(o) end
+        self.pops = {}
+        for i, opt in ipairs(self.opts) do
+            local p = rect(e, T.panel2, true, 0)
+            p.Position = Vector2.new(self.ox, self.oy + (i - 1) * 18)
+            p.Size = Vector2.new(104, 18); p.ZIndex = 40; p.Visible = self.open
+            local tx = text(e, 11, T.text, opt)
+            tx.Position = Vector2.new(self.ox + 6, self.oy + (i - 1) * 18 + 3); tx.ZIndex = 41; tx.Visible = self.open
+            table.insert(self.pops, p); table.insert(self.pops, tx)
+        end
+    end
+    e.hit = function(x, y)
+        if not e.match then return false end
+        if self.open then
+            for i in ipairs(self.opts) do
+                local py = self.oy + (i - 1) * 18
+                if x >= self.ox and x <= self.ox + 104 and y >= py and y <= py + 18 then
+                    set(key, self.opts[i]); self.open = false
+                    e:build(); if cb then cb(get(key)) end
+                    return true
+                end
+            end
+            self.open = false; e:build(); return true
+        end
+        local p = e.box.Position
+        if x >= p.X and x <= p.X + p.Size.X and y >= p.Y and y <= p.Y + p.Size.Y then
+            self.open = true; e:build(); return true
+        end
+        return false
+    end
+    e:place(0, 0)
+    return e
+end
+
+function Section:Keybind(label, key, def)
+    reg(key, def)
+    local e = base(self, 24, label)
+    e.box = rect(e, T.panel2, true, 0)
+    e.brd = rect(e, T.stroke, false, 0, 1)
+    e.txt = text(e, 11, T.sub, tostring(def), true)
+    e.listen = false
+    function e:place(x, y)
+        self.label.Position = Vector2.new(x, y + 5)
+        self.box.Position   = Vector2.new(x + self.win_w - 76, y + 3)
+        self.box.Size       = Vector2.new(64, 18)
+        self.brd.Position   = Vector2.new(x + self.win_w - 76, y + 3)
+        self.brd.Size       = Vector2.new(64, 18)
+        self.txt.Position   = Vector2.new(x + self.win_w - 44, y + 6)
+        self.txt.Text       = self.listen and "[ ... ]" or tostring(get(key))
+        self.txt.Color      = self.listen and accentColor() or T.sub
+    end
+    e.hit = function(x, y)
+        if not e.match then return false end
+        local p = self.box.Position
+        if x >= p.X and x <= p.X + p.Size.X and y >= p.Y and y <= p.Y + p.Size.Y then
+            self.listen = true; e:place(0, 0) return true
+        end
+        return false
+    end
+    e.key = function(name)
+        if not self.listen then return false end
+        set(key, name); self.listen = false; e:place(0, 0) return true
+    end
+    e:place(0, 0)
+    return e
+end
+
+function Section:Button(label, cb)
+    local e = base(self, 22, label)
+    e.bg = rect(e, T.panel2, true, 0)
+    e.brd = rect(e, T.stroke, false, 0, 1)
+    function e:place(x, y)
+        self.label.Position = Vector2.new(x + 6, y + 4)
+        self.bg.Position    = Vector2.new(x, y + 1)
+        self.bg.Size        = Vector2.new(self.win_w - 46, 18)
+        self.brd.Position   = Vector2.new(x, y + 1)
+        self.brd.Size       = Vector2.new(self.win_w - 46, 18)
+    end
+    e.hit = function(x, y)
+        if not e.match then return false end
+        local p = self.bg.Position
+        if x >= p.X and x <= p.X + p.Size.X and y >= p.Y and y <= p.Y + p.Size.Y then
+            if cb then pcall(cb) end; return true
+        end
+        return false
+    end
+    e:place(0, 0)
+    return e
+end
+
+function Section:Label(str)
+    local e = base(self, 14, str)
+    e.label.Color = T.sub
+    e.label.Size = 10
+    function e:place(x, y) self.label.Position = Vector2.new(x, y) end
+    e.hit = function() return false end
+    e:place(0, 0)
+    return e
+end
+
+function Section:Colorpicker(label, key, def, cb)
+    reg(key, def)
+    local e = base(self, 24, label)
+    e.preview = rect(e, Color3.fromRGB(def[1], def[2], def[3]), true, 0)
+    e.brd     = rect(e, T.stroke, false, 0, 1)
+    e.open    = false
+    e.pops    = {}
+    function e:place(x, y)
+        self.label.Position = Vector2.new(x, y + 5)
+        self.preview.Position = Vector2.new(x + self.win_w - 46, y + 4)
+        self.preview.Size     = Vector2.new(34, 16)
+        self.brd.Position     = Vector2.new(x + self.win_w - 46, y + 4)
+        self.brd.Size         = Vector2.new(34, 16)
+        self.ox, self.oy = x + self.win_w - 106, y + 24
+    end
+    function e:build()
+        for _, o in ipairs(self.pops) do kill(o) end
+        self.pops = {}
+        for i = 0, 18 do
+            local h = i / 18
+            local c = Color3.fromHSV(h, 0.75, 1)
+            local p = rect(e, c, true, 0)
+            p.Position = Vector2.new(self.ox + i * 5, self.oy)
+            p.Size = Vector2.new(5, 12); p.ZIndex = 40; p.Visible = self.open
+            table.insert(self.pops, p)
+        end
+    end
+    e.hit = function(x, y)
+        if not e.match then return false end
+        if self.open then
+            if y >= self.oy and y <= self.oy + 12 and x >= self.ox and x <= self.ox + 95 then
+                local h = clamp((x - self.ox) / 95, 0, 1)
+                local c = Color3.fromHSV(h, 0.75, 1)
+                set(key, { math.floor(c.R * 255), math.floor(c.G * 255), math.floor(c.B * 255) })
+                self.preview.Color = c
+                if cb then cb(get(key)) end
+                return true
+            end
+            self.open = false; e:build(); return true
+        end
+        local p = self.preview.Position
+        if x >= p.X and x <= p.X + 34 and y >= p.Y and y <= p.Y + 16 then
+            self.open = true; e:build(); return true
+        end
+        return false
+    end
+    e:place(0, 0)
+    return e
+end
+
+-- Tab layout / interacción
+function Tab_layout(tab)
+    local y = 8
+    for _, s in ipairs(tab.sections) do
+        s.baseY = tab.contentY + y - tab.scroll
+        s:layout()
+        y = y + s.h + 10
+    end
+    tab.total = y
+    for i, t in ipairs(tab.win.tabs) do
+        t.btn.Position = Vector2.new(t.win.x + 8, t.win.y + 52 + (i - 1) * 30)
+        t.btn.Size = Vector2.new(134, 26)
+        t.btnTxt.Position = Vector2.new(t.win.x + 18, t.win.y + 59 + (i - 1) * 30)
+        t.pill.Position = Vector2.new(t.win.x + 2, t.win.y + 57 + (i - 1) * 30)
+        t.pill.Size = Vector2.new(3, 16)
+        t.pill.Visible = (t == t.win.tab)
+        t.btn.Color = (t == t.win.tab) and T.panel2 or T.panel
+        t.btnTxt.Color = (t == t.win.tab) and T.text or T.sub
+    end
+end
+for _, t in ipairs({}) do end
+
+--=====================================================================
+-- [4] CACHE DE JUEGO
+--=====================================================================
+local LP, Char, Hum, HRP
+local Cache = { players = {}, walls = {} }
+
+local function refreshSelf()
+    LP = Players and Players.LocalPlayer
+    Char = LP and LP.Character
+    Hum = Char and Char:FindFirstChildOfClass("Humanoid")
+    HRP = Char and Char:FindFirstChild("HumanoidRootPart")
+end
+
+local function alive(p)
+    local c = p and p.Character
+    local h = c and c:FindFirstChildOfClass("Humanoid")
+    return h and h.Health > 0
+end
+
+local function teams(p)
+    local a = LP and LP.Team
+    return a and p.Team == a
+end
+
+local function toolName(p)
+    local c = p and p.Character
+    local t = c and c:FindFirstChildOfClass("Tool")
+    return t and t.Name or ""
+end
+
+local function w2s(pos)
+    if not Camera then return nil, false end
+    local ok, sp, on = pcall(function() return Camera:WorldToScreenPoint(pos) end)
+    if ok and sp then return Vector2.new(sp.X, sp.Y), on end
+    local ok2, rel = pcall(function() return Camera.CFrame:PointToObjectSpace(pos) end)
+    if not ok2 then return nil, false end
+    local z = -rel.Z
+    if z <= 0.05 then return nil, false end
+    local ok3, vp = pcall(function() return Camera.ViewportSize end)
+    if not ok3 then return nil, false end
+    local fov = math.rad(Camera.FieldOfView)
+    local f = (vp.Y / 2) / math.tan(fov / 2)
+    local sx = vp.X / 2 + (rel.X * f) / z
+    local sy = vp.Y / 2 - (rel.Y * f) / z
+    return Vector2.new(sx, sy), (sx >= 0 and sx <= vp.X and sy >= 0 and sy <= vp.Y)
+end
+
+local function center()
+    local ok, vp = pcall(function() return Camera.ViewportSize end)
+    if ok and vp then return Vector2.new(vp.X / 2, vp.Y / 2) end
+    return Vector2.new(1280, 720)
+end
+
+local function visible(part)
+    if not part then return false end
+    local p = part.Position
+    local dir = (p - Camera.CFrame.Position)
+    local ray = Ray.new(Camera.CFrame.Position, dir.Unit * (dir.Magnitude + 0.5))
+    local ok, hit = pcall(function()
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { Char, Camera }
+        return Workspace:Raycast(Camera.CFrame.Position, dir, params)
+    end)
+    if ok then
+        if not hit then return true end
+        return (hit.Instance:IsDescendantOf(part.Parent))
+    end
+    local ok2, hit2 = pcall(function()
+        return Workspace:FindPartOnRayWithIgnoreList(ray, { Char, Camera })
+    end)
+    return ok2 and (hit2 == nil or hit2:IsDescendantOf(part.Parent))
+end
+
+-- Historial (backtrack / resolver)
+local Hist = {}
+local function pushHist()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and alive(p) and p.Character then
+            local h = p.Character:FindFirstChild("HumanoidRootPart")
+            if h then
+                local list = Hist[p] or {}
+                table.insert(list, { pos = h.Position, t = os.clock() })
+                while #list > 0 and os.clock() - list[1].t > 0.5 do table.remove(list, 1) end
+                Hist[p] = list
+            end
+        end
+    end
+end
+
+--=====================================================================
+-- [5] TARGETING
+--=====================================================================
+local HITBOXES = { "Head", "UpperTorso", "HumanoidRootPart", "LowerTorso", "Torso" }
+
+local function getHitbox(p)
+    local mode = get("aim.hitbox")
+    local c = p.Character
+    if mode == "Nearest" then
+        local best, bd
+        local m = getMouse()
+        for _, n in ipairs(HITBOXES) do
+            local part = c:FindFirstChild(n)
+            if part then
+                local sp = w2s(part.Position)
+                if sp then
+                    local d = (sp - Vector2.new(m.X, m.Y)).Magnitude
+                    if not bd or d < bd then bd, best = d, part end
+                end
+            end
+        end
+        return best
+    end
+    return c:FindFirstChild(mode) or c:FindFirstChild("HumanoidRootPart")
+end
+
+local function valid(p)
+    if p == LP or not p.Character then return false end
+    if get("aim.teamcheck") and teams(p) then return false end
+    if get("aim.alive") and not alive(p) then return false end
+    if get("aim.wallcheck") and not visible(p.Character:FindFirstChild("HumanoidRootPart")) then return false end
+    return true
+end
+
+local Target
+local function acquire()
+    local m = getMouse()
+    local mp = Vector2.new(m.X, m.Y)
+    local fov = get("aim.fov")
+    local best, bd = nil, fov
+    for _, p in ipairs(Players:GetPlayers()) do
+        if valid(p) then
+            local hb = getHitbox(p)
+            if hb then
+                local sp = w2s(hb.Position)
+                if sp then
+                    local d = (sp - mp).Magnitude
+                    if d < bd then bd, best = d, p end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function aimPoint(p)
+    local hb = getHitbox(p)
+    if not hb then return nil end
+    local pos = hb.Position
+    if get("aim.prediction") > 0 and hb.AssemblyLinearVelocity then
+        pos = pos + hb.AssemblyLinearVelocity * (get("aim.prediction") / 1000)
+    end
+    if get("aim.multipoint") then
+        local s = hb.Size * (get("aim.mp_scale") / 100)
+        local seed = math.floor(os.clock() * 12)
+        local rx = ((seed * 37) % 100 / 50 - 1) * s.X
+        local ry = ((seed * 71) % 100 / 50 - 1) * s.Y
+        pos = pos + Vector3.new(rx, ry, 0)
+    end
+    if get("aim.backtrack") then
+        local list = Hist[p]
+        if list and #list > 2 then
+            local idx = math.max(1, #list - math.floor(get("aim.bt_amount")))
+            pos = list[idx].pos
+        end
+    end
+    return pos
+end
+
+local function hitchance(p)
+    local hb = getHitbox(p)
+    if not hb then return 0 end
+    local hits, total = 0, 8
+    for i = 1, total do
+        local off = Vector3.new(
+            (math.random() - 0.5) * hb.Size.X,
+            (math.random() - 0.5) * hb.Size.Y,
+            0)
+        local sp, on = w2s(hb.Position + off)
+        if sp and on then hits = hits + 1 end
+    end
+    return (hits / total) * 100
+end
+
+local function resolveAngle(p)
+    local hb = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+    if not hb then return nil end
+    local mode = get("aim.resolver")
+    if mode == "Off" then return hb.Position end
+    local v = hb.AssemblyLinearVelocity
+    if mode == "Velocity" or (mode == "Adaptive" and v.Magnitude > 6) then
+        return hb.Position + (v.Unit * (hb.Size.Z / 2))
+    end
+    return hb.Position
+end
+
+--=====================================================================
+-- [6] FEATURES · AIM
+--=====================================================================
+local fired, lastShot, lastClick = 0, 0, 0
+
+local function doAim(dt)
+    if not get("aim.enabled") then Target = nil return end
+    if not LP or not Char or not Hum or Hum.Health <= 0 then return end
+
+    local key = get("aim.key")
+    local held = true
+    if key ~= "Always" and UIS then held = UIS:IsKeyDown(Enum.KeyCode[key] or Enum.KeyCode.E) end
+    if not held then Target = nil return end
+
+    local p = get("aim.silent") and acquire() or acquire()
+    if not p then Target = nil return end
+    Target = p
+
+    local pos = aimPoint(p)
+    if not pos then return end
+    local sp = w2s(pos)
+    if not sp then return end
+
+    local m = getMouse()
+    local dx, dy = sp.X - m.X, sp.Y - m.Y
+
+    if get("aim.hitchance_enabled") and hitchance(p) < get("aim.hitchance") then return end
+
+    if get("aim.silent") or get("aim.rage") then
+        moveMouse(dx, dy)
+    else
+        local smooth = clamp(get("aim.smooth"), 1, 30)
+        local f = clamp((12 - smooth) / 10, 0.05, 1)
+        moveMouse(dx * f, dy * f)
+    end
+
+    if get("aim.auto_fire") and os.clock() - lastShot > (1 / math.max(get("aim.fire_rate"), 1)) then
+        if not get("aim.hitchance_enabled") or hitchance(p) >= get("aim.hitchance") then
+            press(); task.delay(0.02, release)
+            lastShot = os.clock()
+        end
+    end
+end
+
+local function doTrigger()
+    if not get("trigger.enabled") or not Target then return end
+    local hb = getHitbox(Target)
+    if not hb then return end
+    local sp = w2s(hb.Position)
+    if not sp then return end
+    local m = getMouse()
+    if (sp - Vector2.new(m.X, m.Y)).Magnitude <= get("trigger.radius") then
+        if os.clock() - lastClick > get("trigger.delay") then
+            press(); task.delay(0.02, release)
+            lastClick = os.clock()
+        end
+    end
+end
+
+--=====================================================================
+-- [7] FEATURES · ANTI-AIM
+--=====================================================================
+local yaw, invert = 0, 1
+local function doAA(dt)
+    if not get("aa.enabled") or not HRP then return end
+    if get("aa.inverter") then invert = -1 else invert = 1 end
+
+    local base = math.deg(math.atan2(-Camera.CFrame.LookVector.X, -Camera.CFrame.LookVector.Z))
+    local target = base + get("aa.yaw_offset")
+
+    if get("aa.spin") then
+        yaw = yaw + get("aa.spin_speed") * 60 * dt
+    elseif get("aa.jitter") then
+        yaw = target + (math.random() > 0.5 and get("aa.jitter_range") or -get("aa.jitter_range"))
+    elseif get("aa.random") then
+        if math.random() > 0.85 then yaw = target + (math.random() - 0.5) * 180 end
+    elseif get("aa.static") then
+        yaw = get("aa.static_yaw")
+    else
+        yaw = target
+    end
+
+    yaw = yaw * invert
+
+    if get("aa.lby") and Hum then
+        local st = Hum.MoveDirection.Magnitude
+        if st < 0.1 then yaw = yaw + (os.clock() % 1 > 0.5 and 35 or -35) end
+    end
+    if get("aa.fake_flick") and math.random() > 0.94 then yaw = yaw + math.random(-90, 90) end
+
+    local pitch = get("aa.pitch")
+    if get("aa.fake_pitch") then pitch = (math.floor(os.clock() * 6) % 2 == 0) and 89 or -89 end
+
+    local ok = pcall(function()
+        HRP.CFrame = CFrame.new(HRP.Position) * CFrame.Angles(math.rad(pitch), math.rad(yaw), 0)
+    end)
+    if ok and get("aa.desync") then
+        pcall(function() HRP.CFrame = HRP.CFrame * CFrame.new(get("aa.desync_amt") / 100, 0, 0) end)
+    end
+end
+
+--=====================================================================
+-- [8] FEATURES · MOVIMIENTO
+--=====================================================================
+local function doMove()
+    if not Hum or Hum.Health <= 0 then return end
+
+    if get("mv.bhop") and UIS and UIS:IsKeyDown(Enum.KeyCode.Space) then
+        if Hum.FloorMaterial ~= Enum.Material.Air then
+            keyPress(32); task.delay(0.05, function() keyRelease(32) end)
+        end
+    end
+
+    if get("mv.crouch_spam") and UIS then
+        keyPress(Enum.KeyCode.LeftControl and 306 or 306)
+        task.delay(0.04, function() keyRelease(306) end)
+    end
+
+    if get("mv.slowwalk") then
+        pcall(function() Hum.WalkSpeed = get("mv.slow_speed") end)
+    elseif get("mv.base_speed") > 0 then
+        pcall(function() Hum.WalkSpeed = get("mv.base_speed") end)
+    end
+
+    if get("mv.autostrafe") and Hum.FloorMaterial == Enum.Material.Air then
+        local v = HRP and HRP.AssemblyLinearVelocity
+        if v and v.Magnitude > 2 then
+            local dir = v.Unit
+            local right = Vector3.new(-dir.Z, 0, dir.X)
+            local ok, look = pcall(function() return Camera.CFrame.LookVector end)
+            if ok then
+                local dot = right:Dot(look)
+                keyPress(dot > 0 and 68 or 65)
+                task.delay(0.03, function() keyRelease(dot > 0 and 68 or 65) end)
+            end
+        end
+    end
+end
+
+local function doFakeDuck()
+    if not get("mv.fakeduck") or not Hum then return end
+    pcall(function()
+        Hum.HipHeight = (math.floor(os.clock() * 8) % 2 == 0) and 1.2 or 0.4
+    end)
+end
+
+--=====================================================================
+-- [9] FEATURES · ESP
+--=====================================================================
+local ESP = {}
+local function espFor(p)
+    if ESP[p] then return ESP[p] end
+    local e = { objs = {} }
+    local function add(c, col)
+        local o = mk(c)
+        if o then
+            if col then o.Color = col end
+            o.Visible = false
+            table.insert(e.objs, o)
+        end
+        return o
+    end
+    e.box     = add("Square"); e.box.Filled = false; e.box.Thickness = 1
+    e.fill    = add("Square"); e.fill.Filled = true; e.fill.Transparency = 0.75
+    e.name    = add("Text"); e.name.Size = 12; e.name.Center = true; e.name.Font = 2
+    e.health  = add("Text"); e.health.Size = 11; e.health.Center = true
+    e.armor   = add("Text"); e.armor.Size = 11; e.armor.Center = true
+    e.weapon  = add("Text"); e.weapon.Size = 11; e.weapon.Center = true
+    e.dist    = add("Text"); e.dist.Size = 11; e.dist.Center = true
+    e.tracer  = add("Line"); e.tracer.Thickness = 1
+    e.hitbox  = add("Square"); e.hitbox.Filled = false
+    e.skel    = {}
+    for i = 1, 16 do e.skel[i] = add("Line"); e.skel[i].Thickness = 1 end
+    ESP[p] = e
+    return e
+end
+
+local function col(key, def)
+    local t = get(key) or def
+    return Color3.fromRGB(t[1], t[2], t[3])
+end
+
+local function espColor(p)
+    local c = col("esp.color", { 255, 255, 255 })
+    if get("esp.health_color") then
+        local h = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+        if h then
+            local r = h.Health / math.max(h.MaxHealth, 1)
+            c = Color3.fromRGB(255 * (1 - r), 255 * r, 60)
+        end
+    end
+    if get("esp.team_color") and teams(p) then c = Color3.fromRGB(90, 200, 255) end
+    return c
+end
+
+local function hideESP(e)
+    for _, o in ipairs(e.objs) do pcall(function() o.Visible = false end) end
+    for _, l in ipairs(e.skel) do pcall(function() l.Visible = false end) end
+end
+
+local SKEL = {
+    { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+    { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" },
+    { "LeftLowerArm", "LeftHand" }, { "UpperTorso", "RightUpperArm" },
+    { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+    { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" },
+    { "LeftLowerLeg", "LeftFoot" }, { "LowerTorso", "RightUpperLeg" },
+    { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+}
+
+local function drawESP()
+    local camPos = Camera and Camera.CFrame.Position
+    for _, p in ipairs(Players:GetPlayers()) do
+        local e = ESP[p]
+        if p ~= LP and p.Character and alive(p) and (not get("esp.teamcheck") or not teams(p)) then
+            e = espFor(p)
+            local hb = p.Character:FindFirstChild("HumanoidRootPart")
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            local head = p.Character:FindFirstChild("Head")
+            if hb and head and camPos then
+                local top = w2s(head.Position + Vector3.new(0, 0.6, 0))
+                local bot = w2s(hb.Position - Vector3.new(0, 2.6, 0))
+                if top and bot then
+                    local h = bot.Y - top.Y
+                    local w = h * 0.55
+                    local x = top.X - w / 2
+                    local c = espColor(p)
+                    local dist = math.floor((camPos - hb.Position).Magnitude)
+
+                    e.box.Visible = get("esp.box")
+                    e.box.Position = Vector2.new(x, top.Y); e.box.Size = Vector2.new(w, h); e.box.Color = c
+                    e.fill.Visible = get("esp.box") and get("esp.fill")
+                    e.fill.Position = e.box.Position; e.fill.Size = e.box.Size; e.fill.Color = c
+
+                    e.name.Visible = get("esp.name")
+                    e.name.Text = p.Name; e.name.Position = Vector2.new(top.X, top.Y - 16); e.name.Color = c
+
+                    e.health.Visible = get("esp.health")
+                    e.health.Text = "HP " .. math.floor(hum and hum.Health or 0)
+                    e.health.Position = Vector2.new(top.X, bot.Y + 2); e.health.Color = c
+
+                    e.armor.Visible = get("esp.armor")
+                    e.armor.Text = "AR " .. math.floor(hb:GetAttribute("Armor") or 0)
+                    e.armor.Position = Vector2.new(top.X, bot.Y + 14); e.armor.Color = c
+
+                    e.weapon.Visible = get("esp.weapon") and toolName(p) ~= ""
+                    e.weapon.Text = toolName(p)
+                    e.weapon.Position = Vector2.new(top.X, bot.Y + 26); e.weapon.Color = c
+
+                    e.dist.Visible = get("esp.dist")
+                    e.dist.Text = tostring(dist) .. "m"
+                    e.dist.Position = Vector2.new(top.X, bot.Y + 38); e.dist.Color = c
+
+                    e.tracer.Visible = get("esp.tracer")
+                    if e.tracer.Visible then
+                        local m = getMouse()
+                        e.tracer.From = get("esp.tracer_origin") == "Mouse" and Vector2.new(m.X, m.Y) or Vector2.new(center().X, center().Y + 300)
+                        e.tracer.To = Vector2.new(top.X + w / 2, bot.Y)
+                        e.tracer.Color = c
+                    end
+
+                    if get("esp.hitbox") then
+                        e.hitbox.Visible = true
+                        local hp = w2s(hb.Position)
+                        if hp then
+                            e.hitbox.Position = Vector2.new(hp.X - 12, hp.Y - 12)
+                            e.hitbox.Size = Vector2.new(24, 24)
+                            e.hitbox.Color = col("esp.hb_color", { 255, 80, 80 })
+                        end
+                    else e.hitbox.Visible = false end
+
+                    if get("esp.skel") then
+                        for i, pair in ipairs(SKEL) do
+                            local a = p.Character:FindFirstChild(pair[1])
+                            local b = p.Character:FindFirstChild(pair[2])
+                            local l = e.skel[i]
+                            if a and b then
+                                local sa, sb = w2s(a.Position), w2s(b.Position)
+                                if sa and sb then
+                                    l.Visible = true; l.From = sa; l.To = sb; l.Color = c
+                                else l.Visible = false end
+                            else l.Visible = false end
+                        end
+                    else for _, l in ipairs(e.skel) do l.Visible = false end end
+                else hideESP(e) end
+            else hideESP(e) end
+        elseif e then hideESP(e) end
+    end
+end
+
+--=====================================================================
+-- [10] FEATURES · OVERLAY / INFO
+--=====================================================================
+local ov = {}
+local function overlay()
+    local c = center()
+    if not ov.fov then
+        ov.fov = mk("Circle"); ov.fov.Thickness = 1; ov.fov.Filled = false
+        ov.ch1 = mk("Line"); ov.ch2 = mk("Line"); ov.ch3 = mk("Line"); ov.ch4 = mk("Line")
+        ov.ch1.Thickness = 1; ov.ch2.Thickness = 1; ov.ch3.Thickness = 1; ov.ch4.Thickness = 1
+        ov.info = mk("Text"); ov.info.Size = 12; ov.info.Font = 2
+    end
+    ov.fov.Visible = get("esp.fov")
+    ov.fov.Position = c; ov.fov.Radius = get("aim.fov")
+    ov.fov.Color = col("esp.fov_color", { 255, 255, 255 })
+
+    local xh = get("esp.crosshair")
+    for _, l in ipairs({ ov.ch1, ov.ch2, ov.ch3, ov.ch4 }) do l.Visible = xh; l.Color = col("esp.ch_color", { 255, 255, 255 }) end
+    local g = get("esp.ch_gap")
+    ov.ch1.From = Vector2.new(c.X - g - 6, c.Y); ov.ch1.To = Vector2.new(c.X - g, c.Y)
+    ov.ch2.From = Vector2.new(c.X + g, c.Y); ov.ch2.To = Vector2.new(c.X + g + 6, c.Y)
+    ov.ch3.From = Vector2.new(c.X, c.Y - g - 6); ov.ch3.To = Vector2.new(c.X, c.Y - g)
+    ov.ch4.From = Vector2.new(c.X, c.Y + g); ov.ch4.To = Vector2.new(c.X, c.Y + g + 6)
+
+    ov.info.Visible = get("esp.watermark")
+    ov.info.Text = string.format("MATCHA HVH  |  %s  |  %.0f fps", get("aim.rage") and "RAGE" or "LEGIT", 1 / math.max(1 / 60, 0.0001))
+    ov.info.Position = Vector2.new(12, 10)
+    ov.info.Color = accentColor()
+end
+
+--=====================================================================
+-- [11] FEATURES · COMBATE EXTRA
+--=====================================================================
+local lastHealth = {}
+local function healthWatch()
+    if not get("info.hitlog") and not get("info.dmg_indicator") then return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        local h = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+        if h then
+            local prev = lastHealth[p] or h.MaxHealth
+            if h.Health < prev then
+                local dmg = math.floor(prev - h.Health)
+                if dmg > 0 and dmg < 200 then
+                    if get("info.hitlog") then
+                        Lib:Notify("HIT", string.format("%s  -%d", p.Name, dmg), T.ok)
+                    end
+                end
+            end
+            lastHealth[p] = h.Health
+        end
+    end
+end
+
+local function noRecoil()
+    if not get("wpn.no_recoil") or not Camera then return end
+    local ok, rot = pcall(function() return Camera.CFrame.Rotation end)
+    if not ok then return end
+    local pitch = math.asin(clamp(rot.LookVector.Y, -1, 1))
+    if pitch > 0.02 then
+        pcall(function()
+            Camera.CFrame = Camera.CFrame * CFrame.Angles(-pitch * (get("wpn.recoil_amt") / 100), 0, 0)
+        end)
+    end
+end
+
+--=====================================================================
+-- [12] NOTIFICACIONES
+--=====================================================================
+local Notifs = {}
+function Lib_Notify(title, body, color)
+    local n = { life = 4 }
+    n.bg   = mk("Square"); n.bg.Filled = true; n.bg.Color = T.panel2; n.bg.Transparency = 0.05
+    n.brd  = mk("Square"); n.brd.Filled = false; n.brd.Color = color or accentColor(); n.brd.Thickness = 1
+    n.acc  = mk("Square"); n.acc.Filled = true; n.acc.Color = color or accentColor()
+    n.t1   = mk("Text"); n.t1.Text = title; n.t1.Size = 12; n.t1.Color = T.text; n.t1.Font = 2
+    n.t2   = mk("Text"); n.t2.Text = body; n.t2.Size = 11; n.t2.Color = T.sub; n.t2.Font = 2
+    table.insert(Notifs, n)
+end
+local function drawNotifs(dt)
+    local y = 60
+    for i = #Notifs, 1, -1 do
+        local n = Notifs[i]
+        n.life = n.life - dt
+        if n.life <= 0 then
+            for _, o in ipairs({ n.bg, n.brd, n.acc, n.t1, n.t2 }) do kill(o) end
+            table.remove(Notifs, i)
+        else
+            local x = 20
+            n.bg.Position = Vector2.new(x, y); n.bg.Size = Vector2.new(210, 42)
+            n.brd.Position = Vector2.new(x, y); n.brd.Size = Vector2.new(210, 42)
+            n.acc.Position = Vector2.new(x, y); n.acc.Size = Vector2.new(2, 42)
+            n.t1.Position = Vector2.new(x + 10, y + 7)
+            n.t2.Position = Vector2.new(x + 10, y + 23)
+            y = y + 50
+        end
+    end
+end
+
+--=====================================================================
+-- [13] CONSTRUCCIÓN DEL MENÚ
+--=====================================================================
+local Lib = UI.new("MATCHA", "hvh framework · v1.0")
+Lib.Notify = Lib_Notify
+
+local function bind(tab, sections)
+    tab.layout = function() Tab_layout(tab) end
+    tab:visible(false)
+    tab.visible = function(_, v)
+        for _, s in ipairs(tab.sections) do s:visible(v) end
+    end
+end
+
+-- ---- AIM ----
+local tAim = Lib:Tab("AIMBOT")
+bind(tAim, nil)
+local sA1 = Section.new(tAim, "CORE", "modo y objetivo")
+sA1:Toggle("Aimbot", "aim.enabled", true)
+sA1:Toggle("Silent Aim", "aim.silent", false)
+sA1:Toggle("Ragebot", "aim.rage", false)
+sA1:Toggle("Legitbot", "aim.legit", true)
+sA1:Keybind("Aim Key", "aim.key", "E")
+sA1:Dropdown("Target Selection", "aim.target", { "Nearest", "Lowest HP", "Distance", "Threat" }, "Nearest")
+sA1:Dropdown("Hitbox", "aim.hitbox", HITBOXES, "Head")
+sA1:Slider("FOV", "aim.fov", 20, 600, 140, 0, "px")
+sA1:Slider("Smooth", "aim.smooth", 1, 30, 6, 0, "x")
+
+local sA2 = Section.new(tAim, "PRECISIÓN")
+sA2:Toggle("Multipoint", "aim.multipoint", false)
+sA2:Slider("MP Scale", "aim.mp_scale", 5, 100, 40, 0, "%")
+sA2:Toggle("Hitchance", "aim.hitchance_enabled", false)
+sA2:Slider("Hitchance", "aim.hitchance", 0, 100, 60, 0, "%")
+sA2:Slider("Min Damage", "aim.min_dmg", 0, 100, 25, 0, "hp")
+sA2:Slider("Prediction", "aim.prediction", 0, 400, 0, 0, "ms")
+sA2:Dropdown("Resolver", "aim.resolver", { "Off", "Velocity", "Angle", "Adaptive" }, "Adaptive")
+sA2:Toggle("Auto Stop", "aim.auto_stop", false)
+sA2:Toggle("Auto Scope", "aim.auto_scope", false)
+
+local sA3 = Section.new(tAim, "DISPARO AUTOMÁTICO")
+sA3:Toggle("Triggerbot", "trigger.enabled", false)
+sA3:Slider("Trigger Radius", "trigger.radius", 1, 60, 14, 0, "px")
+sA3:Slider("Trigger Delay", "trigger.delay", 0.01, 0.4, 0.06, 2, "s")
+sA3:Toggle("Auto Shoot", "aim.auto_fire", false)
+sA3:Toggle("Auto Fire (Rapid)", "aim.auto_fire_rapid", false)
+sA3:Slider("Fire Rate", "aim.fire_rate", 1, 30, 10, 0, "/s")
+
+local sA4 = Section.new(tAim, "FILTROS")
+sA4:Toggle("Team Check", "aim.teamcheck", true)
+sA4:Toggle("Alive Check", "aim.alive", true)
+sA4:Toggle("Wall Check", "aim.wallcheck", false)
+sA4:Toggle("Distance Check", "aim.distcheck", false)
+sA4:Slider("Max Distance", "aim.maxdist", 50, 3000, 1000, 0, "m")
+sA4:Toggle("Backtrack", "aim.backtrack", false)
+sA4:Slider("BT Amount", "aim.bt_amount", 1, 12, 4, 0, "t")
+
+-- ---- ANTI-AIM ----
+local tAA = Lib:Tab("ANTI-AIM")
+bind(tAA, nil)
+local sB1 = Section.new(tAA, "BASE", "rotación defensiva")
+sB1:Toggle("Anti-Aim", "aa.enabled", false)
+sB1:Dropdown("Pitch", "aa.pitch_mode", { "Down", "Up", "Zero", "Random" }, "Down")
+sB1:Slider("Pitch", "aa.pitch", -89, 89, -89, 0, "°")
+sB1:Toggle("Fake Pitch", "aa.fake_pitch", false)
+sB1:Toggle("Inverter", "aa.inverter", false)
+sB1:Slider("Yaw Offset", "aa.yaw_offset", -180, 180, 0, 0, "°")
+
+local sB2 = Section.new(tAA, "MODOS")
+sB2:Toggle("Spinbot", "aa.spin", false)
+sB2:Slider("Spin Speed", "aa.spin_speed", 1, 60, 14, 0, "r/s")
+sB2:Toggle("Jitter", "aa.jitter", false)
+sB2:Slider("Jitter Range", "aa.jitter_range", 1, 90, 25, 0, "°")
+sB2:Toggle("Random Yaw", "aa.random", false)
+sB2:Toggle("Static Yaw", "aa.static", false)
+sB2:Slider("Static Angle", "aa.static_yaw", -180, 180, 90, 0, "°")
+
+local sB3 = Section.new(tAA, "AVANZADO")
+sB3:Toggle("Desync", "aa.desync", false)
+sB3:Slider("Desync Amount", "aa.desync_amt", 0, 100, 35, 0, "%")
+sB3:Toggle("Fake Angles", "aa.fake", false)
+sB3:Toggle("Fake Flick", "aa.fake_flick", false)
+sB3:Toggle("LBY Breaker", "aa.lby", false)
+sB3:Toggle("Freestanding", "aa.freestand", false)
+sB3:Dropdown("Body Yaw", "aa.body_yaw", { "Camera", "Target", "Static" }, "Camera")
+
+-- ---- MOVIMIENTO ----
+local tMv = Lib:Tab("MOVIMIENTO")
+bind(tMv, nil)
+local sC1 = Section.new(tMv, "SALTO")
+sC1:Toggle("Bunny Hop", "mv.bhop", false)
+sC1:Toggle("Auto Strafe", "mv.autostrafe", false)
+sC1:Toggle("Air Strafe", "mv.airstrafe", false)
+sC1:Toggle("Edge Jump", "mv.edge", false)
+sC1:Toggle("Long Jump", "mv.longjump", false)
+local sC2 = Section.new(tMv, "POSTURA")
+sC2:Toggle("Fake Duck", "mv.fakeduck", false)
+sC2:Toggle("Crouch Spam", "mv.crouch_spam", false)
+sC2:Toggle("Slow Walk", "mv.slowwalk", false)
+sC2:Slider("Slow Speed", "mv.slow_speed", 1, 20, 8, 0, "ws")
+sC2:Toggle("Fast Stop", "mv.faststop", false)
+sC2:Slider("Base Speed", "mv.base_speed", 0, 60, 16, 0, "ws")
+local sC3 = Section.new(tMv, "RECORDER")
+sC3:Button("Start Recording", function() Lib:Notify("REC", "grabando ruta", T.ok) end)
+sC3:Button("Stop & Replay", function() Lib:Notify("REC", "replay", T.ok) end)
+sC3:Button("Clear Path", function() Lib:Notify("REC", "ruta borrada", T.bad) end)
+
+-- ---- VISUALES ----
+local tVis = Lib:Tab("VISUALES")
+bind(tVis, nil)
+local sD1 = Section.new(tVis, "ESP")
+sD1:Toggle("Player ESP", "esp.enabled", true)
+sD1:Toggle("Box ESP", "esp.box", true)
+sD1:Toggle("Fill", "esp.fill", false)
+sD1:Toggle("Skeleton ESP", "esp.skel", false)
+sD1:Toggle("Name ESP", "esp.name", true)
+sD1:Toggle("Health ESP", "esp.health", true)
+sD1:Toggle("Armor ESP", "esp.armor", false)
+sD1:Toggle("Weapon ESP", "esp.weapon", false)
+sD1:Toggle("Distance ESP", "esp.dist", false)
+sD1:Toggle("Hitbox ESP", "esp.hitbox", false)
+sD1:Toggle("Team Check", "esp.teamcheck", true)
+sD1:Toggle("Health Color", "esp.health_color", true)
+sD1:Toggle("Team Color", "esp.team_color", true)
+sD1:Colorpicker("ESP Color", "esp.color", { 255, 255, 255 })
+sD1:Colorpicker("Hitbox Color", "esp.hb_color", { 255, 80, 80 })
+
+local sD2 = Section.new(tVis, "OVERLAY")
+sD2:Toggle("Chams", "esp.chams", false)
+sD2:Toggle("Glow ESP", "esp.glow", false)
+sD2:Toggle("Tracers", "esp.tracer", true)
+sD2:Dropdown("Tracer Origin", "esp.tracer_origin", { "Center", "Mouse" }, "Center")
+sD2:Toggle("Bullet Tracers", "esp.bullet", false)
+sD2:Toggle("FOV Circle", "esp.fov", true)
+sD2:Colorpicker("FOV Color", "esp.fov_color", { 255, 255, 255 })
+sD2:Toggle("Crosshair", "esp.crosshair", false)
+sD2:Colorpicker("Crosshair Color", "esp.ch_color", { 255, 255, 255 })
+sD2:Slider("Crosshair Gap", "esp.ch_gap", 0, 20, 6, 0, "px")
+sD2:Toggle("Watermark", "esp.watermark", true)
+
+-- ---- ARMAS ----
+local tWp = Lib:Tab("ARMAS")
+bind(tWp, nil)
+local sE1 = Section.new(tWp, "CONTROL")
+sE1:Toggle("No Recoil", "wpn.no_recoil", false)
+sE1:Slider("Recoil Amount", "wpn.recoil_amt", 10, 100, 70, 0, "%")
+sE1:Toggle("No Spread", "wpn.no_spread", false)
+sE1:Toggle("Rapid Fire", "wpn.rapid", false)
+sE1:Toggle("Auto Reload", "wpn.auto_reload", false)
+sE1:Toggle("Auto Pistol", "wpn.auto_pistol", false)
+sE1:Toggle("Bullet Control", "wpn.bullet_control", false)
+local sE2 = Section.new(tWp, "FEEDBACK")
+sE2:Toggle("Damage Indicator", "info.dmg_indicator", true)
+sE2:Toggle("Hit Marker", "info.hitmarker", true)
+sE2:Toggle("Kill Effect", "info.kill_effect", true)
+
+-- ---- INFO ----
+local tInf = Lib:Tab("INFO")
+bind(tInf, nil)
+local sF1 = Section.new(tInf, "DETECCIÓN")
+sF1:Toggle("Enemy Detection", "info.enemy_detect", true)
+sF1:Toggle("Health Check", "info.health_check", true)
+sF1:Toggle("Weapon Detection", "info.weapon_detect", true)
+sF1:Toggle("Player State", "info.state", false)
+sF1:Toggle("Spectator List", "info.spectators", true)
+local sF2 = Section.new(tInf, "REGISTRO")
+sF2:Toggle("Hit Logs", "info.hitlog", true)
+sF2:Toggle("Hit Marker", "info.hitmarker", true)
+sF2:Toggle("Visibility Check", "info.vis_check", false)
+
+-- ---- CONFIG ----
+local tCfg = Lib:Tab("CONFIG")
+bind(tCfg, nil)
+local sG1 = Section.new(tCfg, "PERFILES")
+sG1:Button("Guardar: default", function() if saveConfig("default") then Lib:Notify("CONFIG", "guardado", T.ok) end end)
+sG1:Button("Cargar: default", function() if loadConfig("default") then Lib:Notify("CONFIG", "cargado", T.ok) end end)
+sG1:Button("Guardar: hvh", function() if saveConfig("hvh") then Lib:Notify("CONFIG", "guardado", T.ok) end end)
+sG1:Button("Cargar: hvh", function() if loadConfig("hvh") then Lib:Notify("CONFIG", "cargado", T.ok) end end)
+local sG2 = Section.new(tCfg, "PRESETS")
+sG2:Button("Rage Preset", function()
+    set("aim.enabled", true); set("aim.rage", true); set("aim.silent", true)
+    set("aim.hitchance_enabled", false); set("aim.fov", 360); set("aim.smooth", 1)
+    set("aa.enabled", true); set("aa.spin", true); set("aa.fake_pitch", true)
+    set("mv.bhop", true); set("mv.autostrafe", true)
+    Lib:Notify("PRESET", "rage aplicado", T.ok)
+end)
+sG2:Button("Legit Preset", function()
+    set("aim.enabled", true); set("aim.rage", false); set("aim.silent", false)
+    set("aim.smooth", 12); set("aim.fov", 90); set("aim.hitchance_enabled", true)
+    set("aa.enabled", false)
+    Lib:Notify("PRESET", "legit aplicado", T.ok)
+end)
+sG2:Button("Anti-Aim Preset", function()
+    set("aa.enabled", true); set("aa.jitter", true); set("aa.lby", true)
+    set("aa.desync", true); set("aa.inverter", true)
+    Lib:Notify("PRESET", "aa aplicado", T.ok)
+end)
+local sG3 = Section.new(tCfg, "AVANZADO")
+sG3:Button("Menu Keybind (K)", function() Lib:Notify("UI", "menu en K", T.sub) end)
+sG3:Button("Reset Config", function()
+    for k, v in pairs(Defaults) do Cfg[k] = v end
+    Lib:Notify("CONFIG", "reset", T.bad)
+end)
+
+-- ---- MISC ----
+local tMs = Lib:Tab("MISC")
+bind(tMs, nil)
+local sH1 = Section.new(tMs, "NETWORK")
+sH1:Toggle("Fake Lag", "misc.fakelag", false)
+sH1:Slider("Fake Lag Amount", "misc.fl_amt", 1, 16, 6, 0, "t")
+sH1:Toggle("Lag Compensation", "misc.lagcomp", false)
+sH1:Toggle("Tick Manipulation", "misc.tick", false)
+sH1:Toggle("Backtrack (visual)", "misc.bt_vis", false)
+local sH2 = Section.new(tMs, "CÁMARA / MODELO")
+sH2:Toggle("Third Person", "misc.tp", false)
+sH2:Slider("TP Distance", "misc.tp_dist", 4, 30, 12, 0, "st")
+sH2:Toggle("Viewmodel Changer", "misc.viewmodel", false)
+sH2:Toggle("FOV Changer", "misc.fov_change", false)
+sH2:Slider("Camera FOV", "misc.fov", 40, 120, 70, 0, "°")
+local sH3 = Section.new(tMs, "COSMÉTICO")
+sH3:Toggle("Skin Changer", "misc.skin", false)
+sH3:Button("Clan Tag Changer", function() Lib:Notify("MISC", "clan tag", T.sub) end)
+
+--=====================================================================
+-- [14] INPUT
+--=====================================================================
+local menuKey = Enum.KeyCode.K
+local keyNames = {}
+for name in pairs(Enum.KeyCode:GetEnumItems() and {} or {}) do end
+
+local function keyFromName(n)
+    local ok, k = pcall(function() return Enum.KeyCode[n] end)
+    return ok and k or nil
+end
+
+if UIS then
+    track(UIS.InputBegan:Connect(function(input, gp)
+        -- keybind capture
+        for _, tab in ipairs(Lib.tabs) do
+            for _, s in ipairs(tab.sections) do
+                for _, e in ipairs(s.items) do
+                    if e.listen then e.key(input.KeyCode.Name) end
+                end
+            end
+        end
+        if gp then return end
+        if input.KeyCode == menuKey then
+            Lib.open = not Lib.open
+            Lib:visible(Lib.open)
+        end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 and Lib.open then
+            Lib:click(input.Position.X, input.Position.Y)
+        end
+    end))
+
+    track(UIS.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            Mouse.X, Mouse.Y = input.Position.X, input.Position.Y
+            for _, tab in ipairs(Lib.tabs) do
+                for _, s in ipairs(tab.sections) do
+                    for _, e in ipairs(s.items) do
+                        if e.update and e.drag then e.update(Mouse.X) end
+                    end
+                end
+            end
+        end
+    end))
+
+    track(UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            for _, tab in ipairs(Lib.tabs) do
+                for _, s in ipairs(tab.sections) do
+                    for _, e in ipairs(s.items) do e.drag = false end
+                end
+            end
+            Lib.drag = false
+        end
+    end))
+end
+
+-- Click routing sobre elementos
+local function routeClick(x, y)
+    for _, tab in ipairs(Lib.tabs) do
+        if tab == Lib.tab then
+            for _, s in ipairs(tab.sections) do
+                for _, e in ipairs(s.items) do
+                    if e.hit then local r = e.hit(x, y); if r then return end end
+                end
+            end
+        end
+    end
+end
+
+-- scroll
+local function onScroll(dir)
+    if not Lib.open or Lib.min or not Lib.tab then return end
+    Lib.tab.scroll = clamp(Lib.tab.scroll - dir * 34, 0, math.max(0, (Lib.tab.total or 0) - (Lib.h - 60)))
+    Lib.tab:layout()
+end
+
+--=====================================================================
+-- [15] LOOP PRINCIPAL
+--=====================================================================
+local fps, frames, acc = 60, 0, 0
+local function step(dt)
+    if not _G.MHVH.running then return end
+    getMouse()
+    refreshSelf()
+
+    if Lib.open and Lib.drag then
+        local m = getMouse()
+        Lib.x = m.X - Lib.dragOff.X
+        Lib.y = m.Y - Lib.dragOff.Y
+        Lib:apply()
+    end
+
+    if Lib.open and Lib.tab then Lib.tab:layout() end
+
+    pcall(doAim, dt)
+    pcall(doTrigger)
+    pcall(doAA, dt)
+    pcall(doMove)
+    pcall(doFakeDuck)
+    pcall(noRecoil)
+    pcall(overlay)
+    if get("esp.enabled") then pcall(drawESP) else
+        for _, e in pairs(ESP) do hideESP(e) end
+    end
+    pcall(healthWatch)
+    pcall(pushHist)
+    pcall(drawNotifs, dt)
+
+    -- FOV / third person
+    if Camera then
+        if get("misc.fov_change") then pcall(function() Camera.FieldOfView = get("misc.fov") end) end
+        if get("misc.tp") then
+            pcall(function()
+                local d = get("misc.tp_dist")
+                Camera.CFrame = Camera.CFrame - Camera.CFrame.LookVector * -d
+                Camera.CFrame = Camera.CFrame + Camera.CFrame.LookVector * 0
+            end)
+        end
+    end
+end
+
+local function boot()
+    if RunService then
+        track(RunService.RenderStepped:Connect(function(dt)
+            local ok = pcall(step, dt)
+        end))
+    else
+        task.spawn(function()
+            while _G.MHVH.running do
+                local t = os.clock()
+                pcall(step, 1 / 60)
+                task.wait()
+            end
+        end)
+    end
+end
+
+-- Hook de click en el menú (se engancha al UIS de arriba)
+if UIS then
+    track(UIS.InputBegan:Connect(function(input, gp)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 and Lib.open then
+            routeClick(input.Position.X, input.Position.Y)
+        end
+    end))
+end
+
+--=====================================================================
+-- [16] UNLOAD
+--=====================================================================
+_G.MHVH.unload = function()
+    _G.MHVH.running = false
+    for _, c in ipairs(_G.MHVH.conns) do pcall(function() c:Disconnect() end) end
+    for _, o in ipairs(_G.MHVH.objs) do kill(o) end
+    for _, e in pairs(ESP) do hideESP(e) end
+    _G.MHVH_LOADED = nil
+end
+
+Lib:visible(true)
+Lib:Notify("MATCHA HVH", "cargado · K para abrir", T.ok)
+boot()
